@@ -35,7 +35,7 @@ app.post('/api/servers/create', async (req, res) => {
                     [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }]
                 },
                 Binds: [
-                    '/home/surflab/cs2_data:/home/surflab/cs2-dedicated/'
+                    '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
                 ] 
             },
             Env: [
