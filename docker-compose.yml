@@ -1,29 +1,12 @@
 services:
-  # Ton API qui pilotera Docker
   backend:
     build: ./backend
+    container_name: cs2-manager-api
+    restart: always
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Permet au backend de piloter Docker
-      - ./backend/database.sqlite:/app/database.sqlite # Persistance de la base de données
+      - /var/run/docker.sock:/var/run/docker.sock # Pour piloter Docker
+      - ./backend:/app # Pour ne pas perdre tes données SQLite
     ports:
       - "3000:3000"
-    environment:
-      - NODE_ENV=development
-
-  # Le serveur CS2 de test (pour valider la config Surf)
-  cs2-master:
-    image: joedwards32/cs2
-    container_name: cs2-surf-instance-1
-    environment:
-      - SRCDS_TOKEN=EE580DD18CF3133A44513E67A854C3B3 # Requis pour que le serveur soit public
-      - STEAMAPPID=730
-      - MAPGROUP=mg_active
-      - STARTMAP=de_dust2 # On changera ça en map de surf plus tard
-      - WORKSHOP_ID= # On injectera ça via le backend
-      - GAME_ALIAS=surf
-      - CS2_ADDITIONAL_ARGS=+sv_airaccelerate 150 +sv_cheats 1 # Commandes Surf
-    ports:
-      - "27015:27015/udp"
-      - "27015:27015/tcp"
-    volumes:
-      - ./steam_data:/home/steam/cs2-dedicated/game/cs2/cfg
+    env_file:
+      - ./backend/.env

@@ -22,6 +22,11 @@ app.post('/api/servers/create', async (req, res) => {
         const lastServer = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
         const nextPort = lastServer ? lastServer.port + 1 : 27015;
 
+        // Nettoyage préventif
+        try {
+            await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
+        } catch (e) { }
+
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2',
             name: `cs2-surf-${nextPort}`,
@@ -36,7 +41,7 @@ app.post('/api/servers/create', async (req, res) => {
                 },
                 Binds: [
                     '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
-                ] 
+                ]
             },
             Env: [
                 `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
