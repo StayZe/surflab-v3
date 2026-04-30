@@ -38,7 +38,7 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_SERVER_HIBERNATE=0`
         ];
 
-        let additionalArgs = '+sv_airaccelerate 150 +sv_cheats 0';
+        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
 
         // Si l'utilisateur demande une map du Workshop
         if (mapId) {
