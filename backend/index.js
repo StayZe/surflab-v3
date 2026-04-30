@@ -52,17 +52,17 @@ app.post('/api/servers/create', async (req, res) => {
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2', // Image en dur
             name: `cs2-surf-${nextPort}`,
-            ExposedPorts: {
-                [`${nextPort}/udp`]: {},
-                [`${nextPort}/tcp`]: {}
-            },
+            // ExposedPorts: {
+            //     [`${nextPort}/udp`]: {},
+            //     [`${nextPort}/tcp`]: {}
+            // },
             HostConfig: {
-                // 🛡️ LE FIX ANTI-VPN 
-                Dns: ["8.8.8.8", "8.8.4.4"], 
-                PortBindings: {
-                    [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
-                    [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }]
-                },
+                // Dns: ["8.8.8.8", "8.8.4.4"], 
+                // PortBindings: {
+                //     [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
+                //     [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }]
+                // },
+                NetworkMode: 'host',
                 Binds: [
                     '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
                 ]
