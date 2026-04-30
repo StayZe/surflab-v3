@@ -7,6 +7,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock # Pour piloter Docker
       - ./backend:/app # Pour ne pas perdre tes données SQLite
     ports:
-      - "3000:3000"
+      - "8888:3000"
     env_file:
       - ./backend/.env
