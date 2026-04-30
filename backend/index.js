@@ -15,6 +15,7 @@ setupDb().then(database => {
 });
 
 // Créer un serveur
+// Créer un serveur
 app.post('/api/servers/create', async (req, res) => {
     const { mapId, maxPlayers, serverName } = req.body;
 
@@ -26,6 +27,29 @@ app.post('/api/servers/create', async (req, res) => {
         try {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
+
+        // --- DÉBUT : Construction dynamique des variables d'environnement ---
+        const envVars = [
+            `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
+            `CS2_SERVERNAME=${serverName}`,
+            `CS2_MAXPLAYERS=${maxPlayers}`,
+            `CS2_PORT=${nextPort}`,
+            `CS2_IP=0.0.0.0`,
+            `CS2_SERVER_HIBERNATE=0`
+        ];
+
+        let additionalArgs = '+sv_airaccelerate 150 +sv_cheats 0';
+
+        // Si l'utilisateur demande une map du Workshop
+        if (mapId) {
+            envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
+            // La Web API Key est passée via l'argument -authkey (obligatoire)
+            additionalArgs += ` -authkey ${process.env.STEAM_WEBAPI_KEY}`;
+        }
+
+        // On injecte les arguments additionnels compilés à la fin
+        envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
+        // --- FIN : Construction dynamique ---
 
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2',
@@ -43,19 +67,7 @@ app.post('/api/servers/create', async (req, res) => {
                     '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
                 ]
             },
-            Env: [
-                `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
-                `CS2_SERVERNAME=${serverName}`,
-                `CS2_MAXPLAYERS=${maxPlayers}`,
-                `CS2_PORT=${nextPort}`,
-                `CS2_IP=0.0.0.0`,
-                // La doc dit que pour le Workshop, on utilise cette variable précise :
-                `CS2_HOST_WORKSHOP_MAP=${mapId}`,
-                // Pour le surf, on ajoute les commandes dans ADDITIONAL_ARGS
-                `CS2_ADDITIONAL_ARGS=+sv_airaccelerate 150 +sv_cheats 0`,
-                // Optionnel : Désactiver l'hibernation pour éviter les crashs cités dans la doc
-                `CS2_SERVER_HIBERNATE=0`
-            ]
+            Env: envVars // <-- On injecte notre tableau généré ici
         });
 
         await container.start();
@@ -64,6 +76,7 @@ app.post('/api/servers/create', async (req, res) => {
             'INSERT INTO servers (name, port, containerId, status) VALUES (?, ?, ?, ?)',
             [serverName, nextPort, container.id, 'running']
         );
+        
         res.json({
             success: true,
             port: nextPort,
