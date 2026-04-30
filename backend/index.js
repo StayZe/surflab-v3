@@ -1,7 +1,7 @@
 const express = require('express');
 const Docker = require('dockerode');
 const { setupDb } = require('./database');
-require('dotenv').config();
+// require('dotenv').config(); // <-- On désactive volontairement dotenv pour ce test !
 
 const app = express();
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -16,7 +16,6 @@ setupDb().then(database => {
 
 // Créer un serveur
 app.post('/api/servers/create', async (req, res) => {
-    // ⚠️ On demande à nouveau "mapId" (l'ID du Workshop)
     const { mapId, maxPlayers, serverName } = req.body;
 
     try {
@@ -28,38 +27,37 @@ app.post('/api/servers/create', async (req, res) => {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
 
-        // Construction des variables d'environnement de base
+        // Construction des variables d'environnement de base avec TOKEN EN DUR
         const envVars = [
-            `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
+            `SRCDS_TOKEN=EE580DD18CF3133A44513E67A854C3B3`, // <-- TOKEN EN DUR ICI
             `CS2_SERVERNAME=${serverName}`,
             `CS2_MAXPLAYERS=${maxPlayers}`,
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0`
+            `CS2_SERVER_HIBERNATE=0` // <-- Virgule retirée, fin du bloc de base
         ];
 
-        // 🌟 LA MAGIE WORKSHOP : On demande à l'image de gérer le téléchargement
+        // 🌟 LA MAGIE WORKSHOP 
         if (mapId) {
             envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
         } else {
-            // Sécurité : si aucun mapId n'est fourni, on lance Inferno par défaut
             envVars.push(`CS2_STARTMAP=de_inferno`);
         }
 
-        // On garde la config de surf de base en arguments supplémentaires
-        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
+        // Ajout du WEBAPI KEY EN DUR (-authkey) pour autoriser le téléchargement Workshop
+        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey 8D296C16EA9BC9D7629C2D63717B3F6F`;
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
 
         // Création du conteneur
         const container = await docker.createContainer({
-            Image: 'joedwards32/cs2',
+            Image: 'joedwards32/cs2', // Image en dur
             name: `cs2-surf-${nextPort}`,
             ExposedPorts: {
                 [`${nextPort}/udp`]: {},
                 [`${nextPort}/tcp`]: {}
             },
             HostConfig: {
-                // 🛡️ LE FIX ANTI-VPN : On force le conteneur à utiliser les DNS Google
+                // 🛡️ LE FIX ANTI-VPN 
                 Dns: ["8.8.8.8", "8.8.4.4"], 
                 PortBindings: {
                     [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
@@ -127,4 +125,4 @@ app.delete('/api/servers/delete/:port', async (req, res) => {
     }
 });
 
-app.listen(3000, () => console.log("Backend sur port 3000 (Mode Native Workshop + Fix DNS)"));
+app.listen(3000, () => console.log("Backend sur port 3000 (Mode Native Workshop TOUT EN DUR)"));
