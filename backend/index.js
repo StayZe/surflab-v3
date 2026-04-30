@@ -1,6 +1,7 @@
 const express = require('express');
 const Docker = require('dockerode');
 const { setupDb } = require('./database'); // On importe notre DB
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -15,7 +16,6 @@ setupDb().then(database => {
 });
 
 // Créer un serveur
-// Créer un serveur
 app.post('/api/servers/create', async (req, res) => {
     const { mapId, maxPlayers, serverName } = req.body;
 
@@ -23,36 +23,39 @@ app.post('/api/servers/create', async (req, res) => {
         const lastServer = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
         const nextPort = lastServer ? lastServer.port + 1 : 27015;
 
-        // Nettoyage préventif
         try {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
 
-        // --- DÉBUT : Construction dynamique des variables d'environnement ---
+        // --- DÉBUT : La ruse du fichier AutoExec ---
+        // On crée un fichier .cfg spécifique pour CE serveur
+        if (mapId) {
+            const cfgContent = `
+hostname "${serverName}"
+sv_airaccelerate 150
+sv_cheats 0
+host_workshop_map ${mapId}
+`;
+            // On écrit ce fichier dans le dossier partagé
+            fs.writeFileSync(`/app/cs2_data/game/csgo/cfg/auto_${nextPort}.cfg`, cfgContent);
+        }
+
+        // --- DÉBUT : Construction dynamique ---
+        // Le serveur démarre TOUJOURS sur Inferno (pour éviter <empty>)
         const envVars = [
             `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
             `CS2_SERVERNAME=${serverName}`,
             `CS2_MAXPLAYERS=${maxPlayers}`,
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0`
+            `CS2_SERVER_HIBERNATE=0`,
+            `CS2_STARTMAP=de_inferno` // On force Inferno au démarrage
         ];
 
-        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
-
-        if (mapId) {
-            // On utilise la variable OFFICIELLE de l'image pour le Workshop
-            envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
-            
-            // La WebAPI key doit quand même être passée dans les arguments
-            additionalArgs += ` -authkey ${process.env.STEAM_WEBAPI_KEY}`;
-        } else {
-            // On ne définit une carte de départ que si ce N'EST PAS une carte du Workshop
-            envVars.push(`CS2_STARTMAP=de_inferno`); 
-        }
+        // On lui demande d'exécuter notre fichier auto.cfg et on lui donne la clé API
+        let additionalArgs = `+exec auto_${nextPort}.cfg -authkey ${process.env.STEAM_WEBAPI_KEY}`;
 
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
-        // --- FIN : Construction dynamique ---
 
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2',
@@ -79,7 +82,7 @@ app.post('/api/servers/create', async (req, res) => {
             'INSERT INTO servers (name, port, containerId, status) VALUES (?, ?, ?, ?)',
             [serverName, nextPort, container.id, 'running']
         );
-        
+
         res.json({
             success: true,
             port: nextPort,

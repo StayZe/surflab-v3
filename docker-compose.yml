@@ -5,9 +5,9 @@ services:
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Option A (La plus propre) : On monte juste les fichiers nécessaires
       - ./backend/database.sqlite:/app/database.sqlite
       - ./backend/.env:/app/.env
+      - /home/steam/cs2_data:/app/cs2_data # <--- AJOUTE CETTE LIGNE
     ports:
       - "3000:3000"
     env_file:
