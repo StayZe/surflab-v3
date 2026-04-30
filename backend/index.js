@@ -29,27 +29,27 @@ app.post('/api/servers/create', async (req, res) => {
         } catch (e) { }
 
         // --- DÉBUT : Construction dynamique des variables d'environnement ---
-        // --- DÉBUT : Construction dynamique des variables d'environnement ---
         const envVars = [
             `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
             `CS2_SERVERNAME=${serverName}`,
             `CS2_MAXPLAYERS=${maxPlayers}`,
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0`,
-            `CS2_STARTMAP=de_inferno`
+            `CS2_SERVER_HIBERNATE=0`
         ];
 
-        // On initialise la chaîne vide
-        let additionalArgs = '';
+        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
 
-        // On place LE WORKSHOP EN PREMIER (Crucial !)
         if (mapId) {
-            additionalArgs += `+host_workshop_map ${mapId} -authkey ${process.env.STEAM_WEBAPI_KEY} `;
+            // On utilise la variable OFFICIELLE de l'image pour le Workshop
+            envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
+            
+            // La WebAPI key doit quand même être passée dans les arguments
+            additionalArgs += ` -authkey ${process.env.STEAM_WEBAPI_KEY}`;
+        } else {
+            // On ne définit une carte de départ que si ce N'EST PAS une carte du Workshop
+            envVars.push(`CS2_STARTMAP=de_inferno`); 
         }
-
-        // On ajoute le reste ensuite
-        additionalArgs += `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
 
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
         // --- FIN : Construction dynamique ---
