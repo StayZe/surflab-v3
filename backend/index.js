@@ -75,6 +75,7 @@ sv_cheats 0
                 [`${rconPort}/tcp`]: {}
             },
             HostConfig: {
+                NetworkMode: 'surflab-v3_default',
                 PortBindings: {
                     [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
                     [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }],
@@ -111,7 +112,7 @@ sv_cheats 0
                 try {
                     console.log(`[RCON] Tentative de connexion au port ${nextPort}...`);
                     const rcon = await Rcon.connect({
-                        host: "172.17.0.1", // L'IP de ta machine
+                        host: `cs2-surf-${nextPort}`,
                         port: rconPort,
                         password: rconPassword,
                         timeout: 5000 // Timeout de 5 sec pour éviter de bloquer Node.js
