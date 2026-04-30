@@ -36,7 +36,7 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
-            `CS2_MAPNAME=de_inferno`
+            `CS2_STARTMAP=de_inferno`
         ];
 
         let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
