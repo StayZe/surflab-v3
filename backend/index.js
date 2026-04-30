@@ -23,6 +23,7 @@ app.post('/api/servers/create', async (req, res) => {
     try {
         const lastServer = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
         const nextPort = lastServer ? lastServer.port + 1 : 27015;
+        const rconPort = nextPort + 10000;
 
         // Nettoyage préventif
         try {
@@ -57,6 +58,7 @@ sv_cheats 0
             `CS2_SERVER_HIBERNATE=0`,
             `CS2_STARTMAP=de_inferno`, // On force Inferno au démarrage pour la stabilité
             `CS2_RCONPW=${rconPassword}` // On injecte le mot de passe RCON
+            `CS2_RCON_PORT=${rconPort}`
         ];
 
         // Exécution de notre fichier auto.cfg au lancement + WebAPI Key
@@ -69,12 +71,14 @@ sv_cheats 0
             name: `cs2-surf-${nextPort}`,
             ExposedPorts: {
                 [`${nextPort}/udp`]: {},
-                [`${nextPort}/tcp`]: {} // Le RCON a besoin du TCP
+                [`${nextPort}/tcp`]: {}, // Le RCON a besoin du TCP
+                [`${rconPort}/tcp`]: {}
             },
             HostConfig: {
                 PortBindings: {
                     [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
-                    [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }]
+                    [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }],
+                    [`${rconPort}/tcp`]: [{ HostPort: rconPort.toString() }]
                 },
                 Binds: [
                     '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
@@ -108,7 +112,7 @@ sv_cheats 0
                     console.log(`[RCON] Tentative de connexion au port ${nextPort}...`);
                     const rcon = await Rcon.connect({
                         host: "10.255.0.26", // L'IP de ta machine
-                        port: nextPort,
+                        port: rconPort,
                         password: rconPassword,
                         timeout: 5000 // Timeout de 5 sec pour éviter de bloquer Node.js
                     });
@@ -122,7 +126,7 @@ sv_cheats 0
                 } catch (rconErr) {
                     console.error(`[RCON] Échec du changement de map sur le port ${nextPort} :`, rconErr.message);
                 }
-            }, 15000); // 15 000 ms = 15 secondes
+            }, 30000); // 30 000 ms = 30 secondes
         }
         // --- FIN : LA MAGIE RCON ---
 
