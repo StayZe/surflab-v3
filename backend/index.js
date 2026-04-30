@@ -21,30 +21,24 @@ async function monitorServerBoot(container, serverId, port) {
         stream.on('data', async (chunk) => {
             const logLine = chunk.toString('utf8');
             
-            // La ligne magique qui indique que le serveur est prêt et connecté à Steam
             if (logLine.includes('GameServerSteamAPIActivated()')) {
-                console.log(`[SUCCÈS] Serveur ${serverId} sur le port ${port} est maintenant en ligne !`);
-                
-                // On met à jour la base de données
-                await db.run('UPDATE servers SET status = ? WHERE id = ?', ['running', serverId]);
-                
-                // On arrête d'écouter les logs pour ne pas saturer la mémoire
+                console.log(`[SUCCÈS] Serveur ${serverId} sur le port ${port} est en ligne !`);
+                // On met à jour le statut ET la date de dernière modification
+                await db.run("UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?", ['running', serverId]);
                 stream.destroy(); 
             }
             
-            // En bonus : on peut écouter les erreurs critiques si tu veux
             if (logLine.includes('reason code 5005')) {
-                console.log(`[ERREUR] Serveur ${serverId} (Port ${port}) a été rejeté par Steam.`);
-                await db.run('UPDATE servers SET status = ? WHERE id = ?', ['error_steam_auth', serverId]);
+                console.log(`[ERREUR] Serveur ${serverId} (Port ${port}) rejeté par Steam.`);
+                await db.run("UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?", ['error_steam_auth', serverId]);
                 stream.destroy();
             }
         });
 
-        // Sécurité : Si après 5 minutes (300000 ms) le serveur n'est toujours pas prêt, on le marque en timeout
         setTimeout(async () => {
             if (!stream.destroyed) {
                 console.log(`[TIMEOUT] Le serveur ${serverId} prend trop de temps à démarrer.`);
-                await db.run('UPDATE servers SET status = ? WHERE id = ?', ['timeout', serverId]);
+                await db.run("UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?", ['timeout', serverId]);
                 stream.destroy();
             }
         }, 300000);
@@ -124,12 +118,54 @@ app.post('/api/servers/create', async (req, res) => {
 });
 
 // ... GET et DELETE restent identiques ...
+// Lister les serveurs (API très complète pour le Front-end)
 app.get('/api/servers', async (req, res) => {
     try {
-        const servers = await db.all('SELECT * FROM servers');
-        res.json(servers);
+        // On récupère tout, trié par le plus récent d'abord
+        const servers = await db.all('SELECT * FROM servers ORDER BY createdAt DESC');
+
+        // L'IP publique de ta machine (à remplacer par ton vrai domaine ou IP si besoin)
+        const SERVER_IP = "10.255.0.26"; // ex: "192.168.1.50" ou "surf.monsite.com"
+
+        // On formate chaque serveur pour rendre la vie du front-end ultra facile
+        const formattedServers = servers.map(server => ({
+            id: server.id,
+            name: server.name,
+            status: server.status, // 'starting', 'running', 'error_steam_auth', 'timeout'
+            
+            // Catégorie : Informations de connexion
+            connection: {
+                port: server.port,
+                // Lien magique : si le front met ça dans un <a href>, ça lance CS2 direct !
+                joinUrl: `steam://connect/${SERVER_IP}:${server.port}` 
+            },
+            
+            // Catégorie : Détails du jeu
+            gameplay: {
+                mapId: server.mapId || 'de_inferno',
+                isWorkshop: !!server.mapId, // Renvoie true si c'est une map workshop
+                maxPlayers: server.maxPlayers || 10
+            },
+            
+            // Catégorie : Système / Technique
+            system: {
+                containerId: server.containerId,
+                createdAt: server.createdAt,
+                updatedAt: server.updatedAt
+            }
+        }));
+
+        // On renvoie un objet global propre
+        res.json({
+            success: true,
+            totalServers: formattedServers.length,
+            activeServers: formattedServers.filter(s => s.status === 'running').length,
+            data: formattedServers
+        });
+
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error("Erreur GET /api/servers :", error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
