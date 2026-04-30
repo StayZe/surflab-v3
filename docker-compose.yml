@@ -4,9 +4,11 @@ services:
     container_name: cs2-manager-api
     restart: always
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Pour piloter Docker
-      - ./backend:/app # Pour ne pas perdre tes données SQLite
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Option A (La plus propre) : On monte juste les fichiers nécessaires
+      - ./backend/database.sqlite:/app/database.sqlite
+      - ./backend/.env:/app/.env
     ports:
-      - "8888:3000"
+      - "3000:3000"
     env_file:
       - ./backend/.env
