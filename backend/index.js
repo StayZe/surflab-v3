@@ -13,6 +13,47 @@ setupDb().then(database => {
     console.log("Base de données SQLite prête.");
 });
 
+// 🛠️ NOUVELLE FONCTION : Surveille les logs pour un statut dynamique
+async function monitorServerBoot(container, serverId, port) {
+    try {
+        const stream = await container.logs({ follow: true, stdout: true, stderr: true });
+        
+        stream.on('data', async (chunk) => {
+            const logLine = chunk.toString('utf8');
+            
+            // La ligne magique qui indique que le serveur est prêt et connecté à Steam
+            if (logLine.includes('GameServerSteamAPIActivated()')) {
+                console.log(`[SUCCÈS] Serveur ${serverId} sur le port ${port} est maintenant en ligne !`);
+                
+                // On met à jour la base de données
+                await db.run('UPDATE servers SET status = ? WHERE id = ?', ['running', serverId]);
+                
+                // On arrête d'écouter les logs pour ne pas saturer la mémoire
+                stream.destroy(); 
+            }
+            
+            // En bonus : on peut écouter les erreurs critiques si tu veux
+            if (logLine.includes('reason code 5005')) {
+                console.log(`[ERREUR] Serveur ${serverId} (Port ${port}) a été rejeté par Steam.`);
+                await db.run('UPDATE servers SET status = ? WHERE id = ?', ['error_steam_auth', serverId]);
+                stream.destroy();
+            }
+        });
+
+        // Sécurité : Si après 5 minutes (300000 ms) le serveur n'est toujours pas prêt, on le marque en timeout
+        setTimeout(async () => {
+            if (!stream.destroyed) {
+                console.log(`[TIMEOUT] Le serveur ${serverId} prend trop de temps à démarrer.`);
+                await db.run('UPDATE servers SET status = ? WHERE id = ?', ['timeout', serverId]);
+                stream.destroy();
+            }
+        }, 300000);
+
+    } catch (error) {
+        console.error(`Erreur de monitoring pour le serveur ${serverId}:`, error);
+    }
+}
+
 app.post('/api/servers/create', async (req, res) => {
     const { mapId, maxPlayers, serverName } = req.body;
 
@@ -24,7 +65,6 @@ app.post('/api/servers/create', async (req, res) => {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
 
-        // Configuration pour joedwards32/cs2
         const envVars = [
             `SRCDS_TOKEN=448FD82D909B98549B1632E675948E5B`, 
             `CS2_SERVERNAME=${serverName}`,
@@ -32,19 +72,13 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
-            // 🚨 FORCER INFERNO : C'est obligatoire pour éviter le crash <empty>
             `CS2_STARTMAP=de_inferno` 
         ];
 
-        // On gère le Workshop via les arguments additionnels pour que le serveur
-        // démarre d'abord proprement, s'authentifie, puis change de map.
         let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey 8D296C16EA9BC9D7629C2D63717B3F6F`;
-        
         if (mapId) {
-            // On demande au serveur d'héberger la map workshop APRES son initialisation
             additionalArgs += ` +host_workshop_map ${mapId}`;
         }
-        
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
 
         const container = await docker.createContainer({
@@ -61,17 +95,26 @@ app.post('/api/servers/create', async (req, res) => {
 
         await container.start();
 
-        await db.run(
-            'INSERT INTO servers (name, port, containerId, status) VALUES (?, ?, ?, ?)',
-            [serverName, nextPort, container.id, 'running']
+        // 🚨 MODIFICATION ICI : On l'insère en statut 'starting' (démarrage en cours)
+        const result = await db.run(
+            'INSERT INTO servers (name, maxPlayers, mapId, port, containerId, status) VALUES (?, ?, ?, ?, ?, ?)',
+            [serverName, maxPlayers, mapId, nextPort, container.id, 'starting']
         );
+        
+        // On récupère l'ID généré par SQLite pour ce nouveau serveur
+        const newServerId = result.lastID;
 
+        // On lance la fonction qui lit les logs en arrière-plan sans bloquer la réponse API
+        monitorServerBoot(container, newServerId, nextPort);
+
+        // On répond immédiatement au front-end
         res.json({
             success: true,
+            id: newServerId,
             port: nextPort,
             containerId: container.id,
-            mapId: mapId,
-            message: "Serveur démarré (Boot sur Inferno, puis bascule Workshop)."
+            status: 'starting', // Le front-end sait qu'il doit afficher un spinner/chargement
+            message: "Serveur en cours de démarrage et de téléchargement..."
         });
 
     } catch (error) {
@@ -80,9 +123,7 @@ app.post('/api/servers/create', async (req, res) => {
     }
 });
 
-// ... GET et DELETE ...
-
-// Lister les serveurs
+// ... GET et DELETE restent identiques ...
 app.get('/api/servers', async (req, res) => {
     try {
         const servers = await db.all('SELECT * FROM servers');
@@ -92,12 +133,10 @@ app.get('/api/servers', async (req, res) => {
     }
 });
 
-// Supprimer un serveur
-app.delete('/api/servers/delete/:port', async (req, res) => {
-    const { port } = req.params;
+app.delete('/api/servers/delete/:id', async (req, res) => {
+    const { id } = req.params;
     try {
-        const server = await db.get('SELECT containerId FROM servers WHERE port = ?', [port]);
-
+        const server = await db.get('SELECT containerId, port FROM servers WHERE id = ?', [id]);
         if (server) {
             if (!server.containerId.startsWith('simulated')) {
                 try {
@@ -105,13 +144,13 @@ app.delete('/api/servers/delete/:port', async (req, res) => {
                     await container.remove({ force: true });
                 } catch (dockerError) { }
             }
-            await db.run('DELETE FROM servers WHERE port = ?', [port]);
-            return res.json({ success: true, message: `Serveur port ${port} nettoyé.` });
+            await db.run('DELETE FROM servers WHERE id = ?', [id]);
+            return res.json({ success: true, message: `Serveur ID ${id} nettoyé.` });
         }
-        res.status(404).json({ success: false, message: "Serveur non trouvé dans la DB." });
+        res.status(404).json({ success: false, message: "Serveur non trouvé." });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-app.listen(3000, () => console.log("Backend sur port 3000 (Mode joedwards32 + HOST + Nouveau Token)"));
+app.listen(3000, () => console.log("Backend sur port 3000 (Monitoring Dynamique des Logs)"));
