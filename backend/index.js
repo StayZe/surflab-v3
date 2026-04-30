@@ -127,7 +127,7 @@ sv_cheats 0
                 } catch (rconErr) {
                     console.error(`[RCON] Échec du changement de map sur le port ${nextPort} :`, rconErr.message);
                 }
-            }, 30000); // 30 000 ms = 30 secondes
+            }, 90000); // 90 000 ms = 90 secondes
         }
         // --- FIN : LA MAGIE RCON ---
 
