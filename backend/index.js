@@ -29,6 +29,7 @@ app.post('/api/servers/create', async (req, res) => {
         } catch (e) { }
 
         // --- DÉBUT : Construction dynamique des variables d'environnement ---
+        // --- DÉBUT : Construction dynamique des variables d'environnement ---
         const envVars = [
             `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
             `CS2_SERVERNAME=${serverName}`,
@@ -36,19 +37,20 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
-            `CS2_STARTMAP=de_inferno` // La map par défaut est bien là
+            `CS2_STARTMAP=de_inferno`
         ];
 
-        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
+        // On initialise la chaîne vide
+        let additionalArgs = '';
 
-        // Si l'utilisateur demande une map du Workshop
+        // On place LE WORKSHOP EN PREMIER (Crucial !)
         if (mapId) {
-            // ATTENTION AU CHANGEMENT ICI : On n'utilise plus envVars.push()
-            // On injecte les commandes du Workshop directement dans la console du serveur !
-            additionalArgs += ` +host_workshop_map ${mapId} -authkey ${process.env.STEAM_WEBAPI_KEY}`;
+            additionalArgs += `+host_workshop_map ${mapId} -authkey ${process.env.STEAM_WEBAPI_KEY} `;
         }
 
-        // On injecte les arguments additionnels compilés à la fin
+        // On ajoute le reste ensuite
+        additionalArgs += `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
+
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
         // --- FIN : Construction dynamique ---
 
