@@ -36,16 +36,16 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
-            `CS2_STARTMAP=de_inferno`
+            `CS2_STARTMAP=de_inferno` // La map par défaut est bien là
         ];
 
         let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
 
         // Si l'utilisateur demande une map du Workshop
         if (mapId) {
-            envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
-            // La Web API Key est passée via l'argument -authkey (obligatoire)
-            additionalArgs += ` -authkey ${process.env.STEAM_WEBAPI_KEY}`;
+            // ATTENTION AU CHANGEMENT ICI : On n'utilise plus envVars.push()
+            // On injecte les commandes du Workshop directement dans la console du serveur !
+            additionalArgs += ` +host_workshop_map ${mapId} -authkey ${process.env.STEAM_WEBAPI_KEY}`;
         }
 
         // On injecte les arguments additionnels compilés à la fin
