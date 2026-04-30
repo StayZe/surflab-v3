@@ -1,7 +1,6 @@
 const express = require('express');
 const Docker = require('dockerode');
 const { setupDb } = require('./database');
-// require('dotenv').config(); // <-- On désactive volontairement dotenv pour ce test !
 
 const app = express();
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -22,47 +21,38 @@ app.post('/api/servers/create', async (req, res) => {
         const lastServer = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
         const nextPort = lastServer ? lastServer.port + 1 : 27015;
 
-        // Nettoyage préventif du conteneur s'il existe déjà
+        // Nettoyage préventif
         try {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
 
-        // Construction des variables d'environnement de base avec TOKEN EN DUR
+        // Variables d'environnement strictes pour l'image joedwards32/cs2
         const envVars = [
-            `SRCDS_TOKEN=EE580DD18CF3133A44513E67A854C3B3`, // <-- TOKEN EN DUR ICI
+            `SRCDS_TOKEN=448FD82D909B98549B1632E675948E5B`, // Ton NOUVEAU token !
             `CS2_SERVERNAME=${serverName}`,
             `CS2_MAXPLAYERS=${maxPlayers}`,
-            `CS2_PORT=${nextPort}`,
+            `CS2_PORT=${nextPort}`, // Le port utilisé sur l'hôte
             `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0` // <-- Virgule retirée, fin du bloc de base
+            `CS2_SERVER_HIBERNATE=0`
         ];
 
-        // 🌟 LA MAGIE WORKSHOP 
+        // On utilise la variable native de l'image pour le Workshop
         if (mapId) {
             envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
         } else {
             envVars.push(`CS2_STARTMAP=de_inferno`);
         }
 
-        // Ajout du WEBAPI KEY EN DUR (-authkey) pour autoriser le téléchargement Workshop
-        let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey 8D296C16EA9BC9D7629C2D63717B3F6F`;
+        // On ajoute la clé WebAPI pour autoriser le téléchargement du Workshop
+        let additionalArgs = `+sv_airaccelerate 150 +sv_cheats 0 -authkey 8D296C16EA9BC9D7629C2D63717B3F6F`;
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
 
         // Création du conteneur
         const container = await docker.createContainer({
-            Image: 'joedwards32/cs2', // Image en dur
+            Image: 'joedwards32/cs2', // On reste bien sur ton image préférée
             name: `cs2-surf-${nextPort}`,
-            // ExposedPorts: {
-            //     [`${nextPort}/udp`]: {},
-            //     [`${nextPort}/tcp`]: {}
-            // },
             HostConfig: {
-                // Dns: ["8.8.8.8", "8.8.4.4"], 
-                // PortBindings: {
-                //     [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
-                //     [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }]
-                // },
-                NetworkMode: 'host',
+                NetworkMode: 'host', // 🚨 LE FIX RÉSEAU : On branche direct sur la VM
                 Binds: [
                     '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
                 ]
@@ -81,10 +71,8 @@ app.post('/api/servers/create', async (req, res) => {
             success: true,
             port: nextPort,
             containerId: container.id,
-            mapId: mapId || 'de_inferno',
-            message: mapId 
-                ? `Serveur démarré ! Le conteneur télécharge actuellement la map Workshop ${mapId}...` 
-                : "Serveur démarré sur Inferno par défaut."
+            mapId: mapId,
+            message: "Serveur démarré avec l'image joedwards32/cs2, Network Host et nouveau Token."
         });
 
     } catch (error) {
@@ -125,4 +113,4 @@ app.delete('/api/servers/delete/:port', async (req, res) => {
     }
 });
 
-app.listen(3000, () => console.log("Backend sur port 3000 (Mode Native Workshop TOUT EN DUR)"));
+app.listen(3000, () => console.log("Backend sur port 3000 (Mode joedwards32 + HOST + Nouveau Token)"));
