@@ -16,36 +16,41 @@ setupDb().then(database => {
 
 // Créer un serveur
 app.post('/api/servers/create', async (req, res) => {
-    // ⚠️ On demande maintenant "mapName" (ex: "surf_utopia")
-    const { mapName, maxPlayers, serverName } = req.body;
+    // ⚠️ On demande à nouveau "mapId" (l'ID du Workshop)
+    const { mapId, maxPlayers, serverName } = req.body;
 
     try {
         const lastServer = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
         const nextPort = lastServer ? lastServer.port + 1 : 27015;
 
-        // Nettoyage préventif
+        // Nettoyage préventif du conteneur s'il existe déjà
         try {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
 
-        // La map par défaut sera de_inferno si tu n'envoies pas de mapName
-        const startMap = mapName || 'de_inferno';
-
+        // Construction des variables d'environnement de base
         const envVars = [
             `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
             `CS2_SERVERNAME=${serverName}`,
             `CS2_MAXPLAYERS=${maxPlayers}`,
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0`,
-            `CS2_STARTMAP=${startMap}` // La map locale est chargée directement au boot !
+            `CS2_SERVER_HIBERNATE=0`
         ];
 
-        // On garde juste la config de surf de base
+        // 🌟 LA MAGIE WORKSHOP : On demande à l'image de gérer le téléchargement
+        if (mapId) {
+            envVars.push(`CS2_HOST_WORKSHOP_MAP=${mapId}`);
+        } else {
+            // Sécurité : si aucun mapId n'est fourni, on lance Inferno par défaut
+            envVars.push(`CS2_STARTMAP=de_inferno`);
+        }
+
+        // On garde la config de surf de base en arguments supplémentaires
         let additionalArgs = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0`;
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
 
-        // Création du conteneur allégée (plus besoin des ports RCON)
+        // Création du conteneur
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2',
             name: `cs2-surf-${nextPort}`,
@@ -54,6 +59,8 @@ app.post('/api/servers/create', async (req, res) => {
                 [`${nextPort}/tcp`]: {}
             },
             HostConfig: {
+                // 🛡️ LE FIX ANTI-VPN : On force le conteneur à utiliser les DNS Google
+                Dns: ["8.8.8.8", "8.8.4.4"], 
                 PortBindings: {
                     [`${nextPort}/udp`]: [{ HostPort: nextPort.toString() }],
                     [`${nextPort}/tcp`]: [{ HostPort: nextPort.toString() }]
@@ -76,8 +83,10 @@ app.post('/api/servers/create', async (req, res) => {
             success: true,
             port: nextPort,
             containerId: container.id,
-            map: startMap,
-            message: `Serveur démarré instantanément sur la map ${startMap}`
+            mapId: mapId || 'de_inferno',
+            message: mapId 
+                ? `Serveur démarré ! Le conteneur télécharge actuellement la map Workshop ${mapId}...` 
+                : "Serveur démarré sur Inferno par défaut."
         });
 
     } catch (error) {
@@ -118,4 +127,4 @@ app.delete('/api/servers/delete/:port', async (req, res) => {
     }
 });
 
-app.listen(3000, () => console.log("Backend sur port 3000 (Mode Local Maps)"));
+app.listen(3000, () => console.log("Backend sur port 3000 (Mode Native Workshop + Fix DNS)"));
