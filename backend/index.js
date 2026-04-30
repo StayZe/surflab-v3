@@ -2,6 +2,7 @@ const express = require('express');
 const Docker = require('dockerode');
 const { setupDb } = require('./database'); // On importe notre DB
 const fs = require('fs');
+const { Rcon } = require('rcon-client');
 require('dotenv').config();
 
 const app = express();
@@ -23,25 +24,30 @@ app.post('/api/servers/create', async (req, res) => {
         const lastServer = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
         const nextPort = lastServer ? lastServer.port + 1 : 27015;
 
+        // Nettoyage préventif
         try {
             await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true });
         } catch (e) { }
 
+        // --- Le mot de passe RCON pour notre API ---
+        const rconPassword = "superpassword123";
+
         // --- DÉBUT : La ruse du fichier AutoExec ---
-        // On crée un fichier .cfg spécifique pour CE serveur
         if (mapId) {
+            // On configure juste le surf et le nom ici (le RCON changera la map)
             const cfgContent = `
 hostname "${serverName}"
 sv_airaccelerate 150
 sv_cheats 0
-host_workshop_map ${mapId}
 `;
-            // On écrit ce fichier dans le dossier partagé
-            fs.writeFileSync(`/app/cs2_data/game/csgo/cfg/auto_${nextPort}.cfg`, cfgContent);
+            try {
+                fs.writeFileSync(`/app/cs2_data/game/csgo/cfg/auto_${nextPort}.cfg`, cfgContent);
+            } catch (fsError) {
+                console.error("Impossible d'écrire le auto.cfg, vérifie les volumes Docker :", fsError.message);
+            }
         }
 
         // --- DÉBUT : Construction dynamique ---
-        // Le serveur démarre TOUJOURS sur Inferno (pour éviter <empty>)
         const envVars = [
             `SRCDS_TOKEN=${process.env.STEAM_GSLT_TOKEN}`,
             `CS2_SERVERNAME=${serverName}`,
@@ -49,20 +55,21 @@ host_workshop_map ${mapId}
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
-            `CS2_STARTMAP=de_inferno` // On force Inferno au démarrage
+            `CS2_STARTMAP=de_inferno`, // On force Inferno au démarrage pour la stabilité
+            `CS2_RCONPW=${rconPassword}` // On injecte le mot de passe RCON
         ];
 
-        // On lui demande d'exécuter notre fichier auto.cfg et on lui donne la clé API
+        // Exécution de notre fichier auto.cfg au lancement + WebAPI Key
         let additionalArgs = `+exec auto_${nextPort}.cfg -authkey ${process.env.STEAM_WEBAPI_KEY}`;
-
         envVars.push(`CS2_ADDITIONAL_ARGS=${additionalArgs}`);
 
+        // Création du conteneur
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2',
             name: `cs2-surf-${nextPort}`,
             ExposedPorts: {
                 [`${nextPort}/udp`]: {},
-                [`${nextPort}/tcp`]: {}
+                [`${nextPort}/tcp`]: {} // Le RCON a besoin du TCP
             },
             HostConfig: {
                 PortBindings: {
@@ -73,7 +80,7 @@ host_workshop_map ${mapId}
                     '/home/steam/cs2_data:/home/steam/cs2-dedicated/'
                 ]
             },
-            Env: envVars // <-- On injecte notre tableau généré ici
+            Env: envVars
         });
 
         await container.start();
@@ -83,14 +90,47 @@ host_workshop_map ${mapId}
             [serverName, nextPort, container.id, 'running']
         );
 
+        // On répond IMMÉDIATEMENT à Postman pour ne pas bloquer la requête
         res.json({
             success: true,
             port: nextPort,
-            containerId: container.id
+            containerId: container.id,
+            message: "Serveur démarré sur Inferno. L'API RCON injectera Utopia dans 15 secondes..."
         });
+
+        // --- DÉBUT : LA MAGIE RCON ---
+        if (mapId) {
+            console.log(`[RCON] Serveur ${nextPort} lancé. Attente de 15s pour le boot du moteur...`);
+            
+            // L'API attend 15 secondes en tâche de fond
+            setTimeout(async () => {
+                try {
+                    console.log(`[RCON] Tentative de connexion au port ${nextPort}...`);
+                    const rcon = await Rcon.connect({
+                        host: "10.255.0.26", // L'IP de ta machine
+                        port: nextPort,
+                        password: rconPassword,
+                        timeout: 5000 // Timeout de 5 sec pour éviter de bloquer Node.js
+                    });
+                    
+                    console.log(`[RCON] Connecté ! Ordre de téléchargement de la map ${mapId}...`);
+                    // On envoie la commande fatale
+                    const response = await rcon.send(`host_workshop_map ${mapId}`);
+                    console.log(`[RCON] Réponse du serveur :`, response);
+                    
+                    await rcon.end();
+                } catch (rconErr) {
+                    console.error(`[RCON] Échec du changement de map sur le port ${nextPort} :`, rconErr.message);
+                }
+            }, 15000); // 15 000 ms = 15 secondes
+        }
+        // --- FIN : LA MAGIE RCON ---
+
     } catch (error) {
         console.error(error);
-        res.status(500).json({ success: false, error: error.message });
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, error: error.message });
+        }
     }
 });
 
@@ -119,6 +159,11 @@ app.delete('/api/servers/delete/:port', async (req, res) => {
                     console.log(`Note: Le conteneur ${server.containerId} n'existait déjà plus dans Docker.`);
                 }
             }
+            // Nettoyage du fichier auto.cfg
+            try {
+                fs.unlinkSync(`/app/cs2_data/game/csgo/cfg/auto_${port}.cfg`);
+            } catch(e) {}
+
             await db.run('DELETE FROM servers WHERE port = ?', [port]);
             return res.json({ success: true, message: `Serveur port ${port} nettoyé.` });
         }
@@ -128,4 +173,4 @@ app.delete('/api/servers/delete/:port', async (req, res) => {
     }
 });
 
-app.listen(3000, () => console.log("Backend sur port 3000"));
+app.listen(3000, () => console.log("Backend sur port 3000 avec support RCON"));

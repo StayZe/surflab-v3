@@ -1,0 +1,24 @@
+# Dépendances Node
+node_modules/
+npm-debug.log*
+
+# Environnement et Secrets (CRITIQUE)
+.env
+.env.local
+
+# Base de données SQLite
+backend/database.sqlite
+backend/database.sqlite-journal
+
+# Fichiers de configuration générés par l'API
+# On ignore les fichiers auto_PORT.cfg pour ne pas commit les configs des serveurs créés
+backend/cs2_data/game/csgo/cfg/auto_*.cfg
+
+# Logs et données Steam (si présents dans ton repo)
+steam_data/
+cs2_data/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
