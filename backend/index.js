@@ -57,7 +57,7 @@ sv_cheats 0
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
             `CS2_STARTMAP=de_inferno`, // On force Inferno au démarrage pour la stabilité
-            `CS2_RCONPW=${rconPassword}` // On injecte le mot de passe RCON
+            `CS2_RCONPW=${rconPassword}`, // On injecte le mot de passe RCON
             `CS2_RCON_PORT=${rconPort}`
         ];
 
