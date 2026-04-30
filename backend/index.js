@@ -35,7 +35,7 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_MAXPLAYERS=${maxPlayers}`,
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0`
+            `CS2_SERVER_HIBERNATE=0`,
             `CS2_MAPNAME=de_inferno`
         ];
 
