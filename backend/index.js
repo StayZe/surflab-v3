@@ -1,6 +1,7 @@
-const express = require('express');
-const Docker  = require('dockerode');
-const { setupDb } = require('./database');
+const express      = require('express');
+const Docker       = require('dockerode');
+const { PassThrough } = require('stream');
+const { setupDb }  = require('./database');
 
 const app    = express();
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -10,9 +11,12 @@ const PAGE_LIMIT = 20;
 let db;
 app.use(express.json());
 
-setupDb().then(database => {
+setupDb().then(async (database) => {
     db = database;
     console.log("Base de données SQLite prête.");
+    await pullImageIfNeeded('cm2network/steamcmd').catch(err =>
+        console.warn('[STARTUP] Impossible de pull cm2network/steamcmd:', err.message)
+    );
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -49,9 +53,13 @@ function paginate(rows, page, limit) {
 
 async function monitorServerBoot(container, serverId, port) {
     try {
-        const stream = await container.logs({ follow: true, stdout: true, stderr: true });
+        const logStream = await container.logs({ follow: true, stdout: true, stderr: true });
 
-        stream.on('data', async (chunk) => {
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        docker.modem.demuxStream(logStream, stdout, stderr);
+
+        const onData = async (chunk) => {
             const log = chunk.toString('utf8');
 
             if (log.includes('GameServerSteamAPIActivated()')) {
@@ -60,7 +68,7 @@ async function monitorServerBoot(container, serverId, port) {
                     "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
                     ['running', serverId]
                 );
-                stream.destroy();
+                logStream.destroy();
             }
 
             if (log.includes('reason code 5005')) {
@@ -69,23 +77,71 @@ async function monitorServerBoot(container, serverId, port) {
                     "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
                     ['error_steam_auth', serverId]
                 );
-                stream.destroy();
+                logStream.destroy();
             }
-        });
+        };
+
+        stdout.on('data', onData);
+        stderr.on('data', onData);
 
         setTimeout(async () => {
-            if (!stream.destroyed) {
+            if (!logStream.destroyed) {
                 console.log(`[TIMEOUT] Serveur ${serverId}`);
                 await db.run(
                     "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
                     ['timeout', serverId]
                 );
-                stream.destroy();
+                logStream.destroy();
             }
         }, 300000);
 
     } catch (err) {
         console.error(`Monitoring error serveur ${serverId}:`, err);
+    }
+}
+
+async function pullImageIfNeeded(image) {
+    try {
+        await docker.getImage(image).inspect();
+    } catch {
+        console.log(`[PRELOAD] Pull image ${image}...`);
+        await new Promise((resolve, reject) => {
+            docker.pull(image, (err, stream) => {
+                if (err) return reject(err);
+                docker.modem.followProgress(stream, (err) => err ? reject(err) : resolve());
+            });
+        });
+        console.log(`[PRELOAD] Image ${image} prête.`);
+    }
+}
+
+async function preloadWorkshopMap(mapId) {
+    console.log(`[PRELOAD] Début téléchargement map ${mapId}...`);
+    try {
+        await pullImageIfNeeded('cm2network/steamcmd');
+        const [output] = await docker.run(
+            'cm2network/steamcmd',
+            [
+                '+force_install_dir', '/home/steam/cs2_data',
+                '+login', 'anonymous',
+                '+workshop_download_item', '730', String(mapId),
+                'validate',
+                '+quit',
+            ],
+            process.stdout,
+            {
+                Entrypoint: ['/home/steam/steamcmd/steamcmd.sh'],
+                HostConfig: {
+                    Binds: ['/home/steam/cs2_data:/home/steam/cs2_data'],
+                    AutoRemove: true,
+                },
+            }
+        );
+        console.log(`[PRELOAD] Map ${mapId} téléchargée (exit code: ${output.StatusCode})`);
+        return output.StatusCode === 0;
+    } catch (err) {
+        console.warn(`[PRELOAD] Échec téléchargement map ${mapId}:`, err.message);
+        return false;
     }
 }
 
@@ -107,12 +163,34 @@ app.post('/api/servers/create', async (req, res) => {
             `CS2_PORT=${nextPort}`,
             `CS2_IP=0.0.0.0`,
             `CS2_SERVER_HIBERNATE=0`,
-            `CS2_STARTMAP=de_inferno`,
+            ...(!mapId ? [`CS2_STARTMAP=de_inferno`] : []),
         ];
 
+        // ── Résolution de la map ───────────────────────────────────────────
+        let mapLabel = 'de_inferno (défaut)';
         let args = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey 8D296C16EA9BC9D7629C2D63717B3F6F`;
-        if (mapId) args += ` +host_workshop_map ${mapId}`;
+
+        if (mapId) {
+            const mapRow = await db.get('SELECT * FROM maps WHERE id = ?', [mapId]);
+            if (mapRow) {
+                mapLabel = `${mapRow.name} (${mapRow.slug}) — Workshop ID ${mapId} ✅`;
+                console.log(`[MAP] Map workshop trouvée en DB : ${mapLabel}`);
+            } else {
+                mapLabel = `Workshop ID ${mapId} ⚠️  (non référencée en DB)`;
+                console.warn(`[MAP] Map workshop NON trouvée en DB pour l'ID ${mapId} — chargement quand même`);
+            }
+            args += ` +host_workshop_map ${mapId}`;
+
+            await preloadWorkshopMap(mapId);
+        } else {
+            console.log(`[MAP] Aucun mapId fourni — map standard : de_inferno`);
+            args += ` +map de_inferno`;
+        }
+
         envVars.push(`CS2_ADDITIONAL_ARGS=${args}`);
+
+        console.log(`[CREATE] Serveur "${serverName}" | Port ${nextPort} | Map : ${mapLabel}`);
+        console.log(`[CREATE] Args CS2 : ${args}`);
 
         const container = await docker.createContainer({
             Image: 'joedwards32/cs2',
@@ -342,11 +420,11 @@ app.post('/api/servers/:id/restart', async (req, res) => {
 // ── DELETE ─────────────────────────────────────────────────────────────────
 
 app.delete('/api/servers/delete/:id', async (req, res) => {
-    const { ownerId } = req.body;
+    const ownerId = req.body?.ownerId;
     try {
         const server = await db.get('SELECT * FROM servers WHERE id = ?', [req.params.id]);
         if (!server) return res.status(404).json({ success: false, message: "Serveur non trouvé." });
-        if (server.ownerId && server.ownerId !== ownerId) {
+        if (server.ownerId && String(server.ownerId) !== String(ownerId)) {
             return res.status(403).json({ success: false, message: "Non autorisé." });
         }
 
