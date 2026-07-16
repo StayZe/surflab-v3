@@ -1,35 +1,93 @@
+require('dotenv').config();
 const express      = require('express');
+const cors         = require('cors');
 const Docker       = require('dockerode');
+const crypto       = require('crypto');
 const { PassThrough } = require('stream');
 const { setupDb }  = require('./database');
+const { pickAvailablePort, validateCreatePayload } = require('./validation');
+const { sendRconWithRetry } = require('./rcon');
+const {
+    createApiKeyMiddleware,
+    createCorsOptions,
+    createFixedWindowRateLimiter,
+    securityHeaders,
+} = require('./security');
+const sqlite3      = require('sqlite3');
+const { open }     = require('sqlite');
 
 const app    = express();
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-const SERVER_IP = "10.255.0.26";
+
+function readIntegerEnv(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+    const value = Number.parseInt(process.env[name] || '', 10);
+    return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
+function readFloatEnv(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+    const value = Number.parseFloat(process.env[name] || '');
+    return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
+const SERVER_IP = process.env.SERVER_IP || '10.255.0.26';
 const PAGE_LIMIT = 20;
+const PORT = readIntegerEnv('PORT', 3000, { min: 1, max: 65535 });
+const BIND_ADDRESS = process.env.BIND_ADDRESS || '0.0.0.0';
+const BASE_PORT = readIntegerEnv('BASE_PORT', 27026, { min: 1024, max: 65535 });
+const PORT_RANGE_SIZE = readIntegerEnv('PORT_RANGE_SIZE', 100, { min: 1, max: 1000 });
+const CS2_IMAGE = process.env.CS2_IMAGE || 'joedwards32/cs2';
+const CS2_DATA_PATH = process.env.CS2_DATA_PATH || '/home/steam/cs2_data';
+const DEFAULT_DURATION_MINUTES = readIntegerEnv('DEFAULT_SERVER_DURATION_MINUTES', 60, { min: 15, max: 480 });
+const MIN_DURATION_MINUTES = readIntegerEnv('MIN_SERVER_DURATION_MINUTES', 15, { min: 5, max: 480 });
+const MAX_DURATION_MINUTES = readIntegerEnv('MAX_SERVER_DURATION_MINUTES', 480, { min: 15, max: 1440 });
+const MAX_ACTIVE_SERVERS = readIntegerEnv('MAX_ACTIVE_SERVERS', 8, { min: 1, max: 64 });
+const MAX_ACTIVE_PER_OWNER = readIntegerEnv('MAX_ACTIVE_PER_OWNER', 2, { min: 1, max: 8 });
+const MAX_PLAYERS_PER_SERVER = readIntegerEnv('MAX_PLAYERS_PER_SERVER', 16, { min: 1, max: 64 });
+const CREATE_RATE_LIMIT_PER_MINUTE = readIntegerEnv('CREATE_RATE_LIMIT_PER_MINUTE', 10, { min: 1, max: 120 });
+const CONTAINER_MEMORY_MB = readIntegerEnv('CONTAINER_MEMORY_MB', 4096, { min: 1024, max: 16384 });
+const CONTAINER_CPU_LIMIT = readFloatEnv('CONTAINER_CPU_LIMIT', 2, { min: 0.5, max: 8 });
+const CONTAINER_PIDS_LIMIT = readIntegerEnv('CONTAINER_PIDS_LIMIT', 1024, { min: 128, max: 4096 });
+const BOOT_TIMEOUT_MS = readIntegerEnv('BOOT_TIMEOUT_MS', 900000, { min: 60000, max: 1800000 });
+const RCON_HOST = process.env.RCON_HOST || SERVER_IP;
+const DYNAMIC_CS2_LAN = process.env.DYNAMIC_CS2_LAN === '0' ? '0' : '1';
+const ALLOW_UNLISTED_MAPS = process.env.ALLOW_UNLISTED_MAPS === 'true';
+const SURFLAB_API_KEY = process.env.SURFLAB_API_KEY || '';
+
+// Base SQLite de SharpTimer (leaderboard) — lue via le montage existant
+// /home/steam/cs2_data -> /app/cs2_data (ouverte en LECTURE SEULE, les
+// serveurs de jeu y écrivent les records)
+const STATS_DB_PATH = process.env.STATS_DB_PATH
+    || '/app/cs2_data/game/csgo/cfg/SharpTimer/database.db';
 
 let db;
-app.use(express.json());
-
-setupDb().then(async (database) => {
-    db = database;
-    console.log("Base de données SQLite prête.");
-    await pullImageIfNeeded('cm2network/steamcmd').catch(err =>
-        console.warn('[STARTUP] Impossible de pull cm2network/steamcmd:', err.message)
-    );
+let createQueue = Promise.resolve();
+let httpServer = null;
+let shuttingDown = false;
+const requireApiKey = createApiKeyMiddleware(SURFLAB_API_KEY);
+const createRateLimit = createFixedWindowRateLimiter({
+    max: CREATE_RATE_LIMIT_PER_MINUTE,
+    windowMs: 60_000,
 });
+
+app.disable('x-powered-by');
+app.use(securityHeaders);
+app.use(cors(createCorsOptions(process.env.CORS_ORIGINS || '')));
+app.use(express.json({ limit: '16kb' }));
+app.use('/api/servers', requireApiKey);
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function formatServer(server) {
+    const displayPort = server.port ?? server.lastPort ?? null;
     return {
         id:         server.id,
         name:       server.name,
         status:     server.status,
         ownerId:    server.ownerId ?? null,
         connection: {
-            port:    server.port,
-            joinUrl: `steam://connect/${SERVER_IP}:${server.port}`,
+            port:    displayPort,
+            joinUrl: displayPort ? `steam://connect/${SERVER_IP}:${displayPort}` : null,
+            released: server.port === null || server.port === undefined,
         },
         gameplay: {
             mapId:      server.mapId || 'de_inferno',
@@ -40,6 +98,10 @@ function formatServer(server) {
             containerId: server.containerId,
             createdAt:   server.createdAt,
             updatedAt:   server.updatedAt,
+            durationMinutes: server.durationMinutes ?? null,
+            expiresAt:   server.expiresAt ?? null,
+            stoppedAt:   server.stoppedAt ?? null,
+            failureReason: server.failureReason ?? null,
         },
     };
 }
@@ -51,177 +113,345 @@ function paginate(rows, page, limit) {
     return { data: rows.slice(offset, offset + limit), total, page, pages, limit };
 }
 
-async function monitorServerBoot(container, serverId, port) {
+function normalizeWorkshopId(value) {
+    return String(value).replace(/\.0+$/, '');
+}
+
+function getContainerEnv(info, name) {
+    const prefix = `${name}=`;
+    const entry = (info?.Config?.Env || []).find(value => value.startsWith(prefix));
+    return entry ? entry.slice(prefix.length) : null;
+}
+
+async function monitorServerBoot(container, serverId, port, workshop = null) {
     try {
-        const logStream = await container.logs({ follow: true, stdout: true, stderr: true });
+        const logStream = await container.logs({
+            follow: true,
+            stdout: true,
+            stderr: true,
+            since: Math.floor(Date.now() / 1000),
+        });
 
         const stdout = new PassThrough();
         const stderr = new PassThrough();
         docker.modem.demuxStream(logStream, stdout, stderr);
 
-        const onData = async (chunk) => {
-            const log = chunk.toString('utf8');
+        let settled = false;
+        let buffer = '';
+        let timeoutHandle = null;
+        let steamAuthRejected = false;
+        let workshopRequestStarted = false;
+        let workshopFinalizeStarted = false;
+        let resolvedWorkshopMap = workshop?.mapSlug || null;
 
-            if (log.includes('GameServerSteamAPIActivated()')) {
-                console.log(`[OK] Serveur ${serverId} (port ${port}) en ligne`);
+        const finish = async (status, reason = null) => {
+            if (settled) return;
+            settled = true;
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            try {
                 await db.run(
-                    "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
-                    ['running', serverId]
+                    "UPDATE servers SET status = ?, failureReason = ?, updatedAt = datetime('now') WHERE id = ?",
+                    [status, reason, serverId]
                 );
+            } finally {
                 logStream.destroy();
             }
+        };
 
-            if (log.includes('reason code 5005')) {
-                console.log(`[ERR] Serveur ${serverId} rejeté Steam`);
-                await db.run(
-                    "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
-                    ['error_steam_auth', serverId]
+        const requestWorkshopMap = async () => {
+            if (!workshop || workshopRequestStarted || settled) return;
+            workshopRequestStarted = true;
+            try {
+                await sendRconWithRetry({
+                    host: RCON_HOST,
+                    port,
+                    password: workshop.rconPassword,
+                    command: `host_workshop_map ${workshop.mapId}`,
+                    timeoutMs: 10_000,
+                });
+                console.log(`[WORKSHOP] Serveur ${serverId}: chargement de ${workshop.mapId} demande`);
+            } catch (error) {
+                await finish('error', `Workshop map load failed: ${error.message}`);
+            }
+        };
+
+        const finalizeWorkshopMap = async () => {
+            if (!workshop || workshopFinalizeStarted || settled) return;
+            workshopFinalizeStarted = true;
+            try {
+                const command = [
+                    `hostname "${workshop.serverName}"`,
+                    'mp_timelimit 0',
+                    'mp_endmatch_votenextmap false',
+                    'mp_match_end_changelevel false',
+                    'sv_allow_votes false',
+                    'bot_quota 0',
+                    'nextlevel ""',
+                ].join('; ');
+                await sendRconWithRetry({
+                    host: RCON_HOST,
+                    port,
+                    password: workshop.rconPassword,
+                    command,
+                    timeoutMs: 10_000,
+                });
+                console.log(`[OK] Serveur ${serverId} (port ${port}) sur ${resolvedWorkshopMap}`);
+                await finish('running');
+            } catch (error) {
+                await finish('error', `Workshop finalization failed: ${error.message}`);
+            }
+        };
+
+        const onData = (chunk) => {
+            if (settled) return;
+            buffer = (buffer + chunk.toString('utf8')).slice(-8192);
+            const steamReady = buffer.includes('GameServerSteamAPIActivated()')
+                || buffer.includes('Gameserver logged on to Steam, assigned identity')
+                || buffer.includes('CNetworkGameServerBase::SetServerState (ss_loading -> ss_active)');
+            if (workshop && !resolvedWorkshopMap) {
+                const escapedId = String(workshop.mapId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const match = buffer.match(
+                    new RegExp(`addons\\(${escapedId}\\).*desc\\(Changelevel \\(([^)]+)\\)\\)`)
                 );
-                logStream.destroy();
+                if (match) resolvedWorkshopMap = match[1];
+            }
+
+            if (workshop && resolvedWorkshopMap
+                && buffer.includes(`Spawn Server: ${resolvedWorkshopMap}`)) {
+                finalizeWorkshopMap().catch(err =>
+                    console.error(`[WORKSHOP] Finalisation serveur ${serverId}:`, err)
+                );
+            } else if (steamReady && workshop) {
+                requestWorkshopMap().catch(err =>
+                    console.error(`[WORKSHOP] Serveur ${serverId}:`, err)
+                );
+            } else if (steamReady) {
+                console.log(`[OK] Serveur ${serverId} (port ${port}) en ligne`);
+                finish('running').catch(err =>
+                    console.error(`[MONITOR] Mise a jour serveur ${serverId}:`, err)
+                );
+            } else if (buffer.includes('reason code 5005') && !steamAuthRejected) {
+                steamAuthRejected = true;
+                console.log(`[WARN] Serveur ${serverId}: code Steam 5005, attente de l'activation`);
             }
         };
 
         stdout.on('data', onData);
         stderr.on('data', onData);
+        logStream.on('error', err => {
+            if (!settled) console.warn(`[MONITOR] Logs serveur ${serverId}:`, err.message);
+        });
 
-        setTimeout(async () => {
-            if (!logStream.destroyed) {
+        timeoutHandle = setTimeout(() => {
+            if (!settled) {
                 console.log(`[TIMEOUT] Serveur ${serverId}`);
-                await db.run(
-                    "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
-                    ['timeout', serverId]
+                const status = steamAuthRejected ? 'error_steam_auth' : 'timeout';
+                const reason = steamAuthRejected
+                    ? 'Steam authentication rejected (5005) and boot timed out'
+                    : 'Boot timeout';
+                finish(status, reason).catch(err =>
+                    console.error(`[MONITOR] Mise a jour serveur ${serverId}:`, err)
                 );
-                logStream.destroy();
             }
-        }, 300000);
+        }, BOOT_TIMEOUT_MS);
 
     } catch (err) {
         console.error(`Monitoring error serveur ${serverId}:`, err);
     }
 }
 
-async function pullImageIfNeeded(image) {
-    try {
-        await docker.getImage(image).inspect();
-    } catch {
-        console.log(`[PRELOAD] Pull image ${image}...`);
-        await new Promise((resolve, reject) => {
-            docker.pull(image, (err, stream) => {
-                if (err) return reject(err);
-                docker.modem.followProgress(stream, (err) => err ? reject(err) : resolve());
-            });
-        });
-        console.log(`[PRELOAD] Image ${image} prête.`);
+function httpError(message, statusCode) {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    return error;
+}
+
+function assertOwnerAccess(server, ownerId) {
+    if (!ownerId) {
+        throw httpError('ownerId est obligatoire pour gerer ce serveur.', 400);
+    }
+    if (!server.ownerId || String(server.ownerId) !== String(ownerId)) {
+        throw httpError('Ce serveur n’appartient pas a cet utilisateur.', 403);
     }
 }
 
-async function preloadWorkshopMap(mapId) {
-    console.log(`[PRELOAD] Début téléchargement map ${mapId}...`);
-    try {
-        await pullImageIfNeeded('cm2network/steamcmd');
-        const [output] = await docker.run(
-            'cm2network/steamcmd',
-            [
-                '+force_install_dir', '/home/steam/cs2_data',
-                '+login', 'anonymous',
-                '+workshop_download_item', '730', String(mapId),
-                'validate',
-                '+quit',
-            ],
-            process.stdout,
-            {
-                Entrypoint: ['/home/steam/steamcmd/steamcmd.sh'],
-                HostConfig: {
-                    Binds: ['/home/steam/cs2_data:/home/steam/cs2_data'],
-                    AutoRemove: true,
-                },
-            }
-        );
-        console.log(`[PRELOAD] Map ${mapId} téléchargée (exit code: ${output.StatusCode})`);
-        return output.StatusCode === 0;
-    } catch (err) {
-        console.warn(`[PRELOAD] Échec téléchargement map ${mapId}:`, err.message);
-        return false;
+function enqueueCreate(task) {
+    const queued = createQueue.then(task, task);
+    createQueue = queued.catch(() => {});
+    return queued;
+}
+
+async function assertCapacity(ownerId) {
+    const activeStatuses = "('starting', 'running')";
+    if (MAX_ACTIVE_SERVERS > 0) {
+        const total = await db.get(`SELECT COUNT(*) AS n FROM servers WHERE status IN ${activeStatuses}`);
+        if ((total?.n ?? 0) >= MAX_ACTIVE_SERVERS) {
+            throw httpError('Capacite maximale de serveurs actifs atteinte.', 409);
+        }
     }
+    if (ownerId && MAX_ACTIVE_PER_OWNER > 0) {
+        const owned = await db.get(
+            `SELECT COUNT(*) AS n FROM servers WHERE ownerId = ? AND status IN ${activeStatuses}`,
+            [ownerId]
+        );
+        if ((owned?.n ?? 0) >= MAX_ACTIVE_PER_OWNER) {
+            throw httpError('Cet utilisateur a atteint sa limite de serveurs actifs.', 409);
+        }
+    }
+}
+
+async function findAvailablePort() {
+    const used = new Set();
+    const activeRows = await db.all('SELECT port FROM servers WHERE port IS NOT NULL');
+    activeRows.forEach(row => used.add(Number(row.port)));
+
+    const containers = await docker.listContainers({ all: true });
+    for (const container of containers) {
+        for (const name of container.Names || []) {
+            const match = name.match(/^\/cs2-surf-(\d+)$/);
+            if (match) used.add(Number(match[1]));
+        }
+    }
+
+    const port = pickAvailablePort(used, BASE_PORT, PORT_RANGE_SIZE);
+    if (port !== null) return port;
+    throw httpError('Aucun port CS2 disponible dans la plage configuree.', 409);
+}
+
+async function createGameServer(payload) {
+    if (!process.env.STEAM_WEBAPI_KEY) {
+        throw httpError('Cle Steam Workshop absente dans backend/.env.', 500);
+    }
+    if (DYNAMIC_CS2_LAN === '0' && !process.env.STEAM_GSLT_TOKEN) {
+        throw httpError('GSLT Steam absent pour le mode public.', 500);
+    }
+
+    await assertCapacity(payload.ownerId);
+    const nextPort = await findAvailablePort();
+    let workshopMapSlug = null;
+    const workshopMapId = normalizeWorkshopId(payload.mapId);
+
+    const mapRow = await db.get('SELECT * FROM maps WHERE id = ?', [payload.mapId]);
+    if (!mapRow && !ALLOW_UNLISTED_MAPS) {
+        throw httpError('Cette map ne fait pas partie du catalogue SurfLab.', 400);
+    }
+    const mapLabel = mapRow
+        ? `${mapRow.name} (${mapRow.slug}) - Workshop ID ${workshopMapId}`
+        : `Workshop ID ${workshopMapId}`;
+    workshopMapSlug = mapRow?.slug || null;
+
+    // La prise en charge Workshop native de l'image est experimentale et peut
+    // rester sur <empty>. On demarre donc sur une map locale, puis le moniteur
+    // demande la map Workshop par RCON une fois Steam reellement active.
+    let args = `+hostname "${payload.serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey ${process.env.STEAM_WEBAPI_KEY}`;
+    const rconPassword = crypto.randomBytes(24).toString('base64url');
+
+    const envVars = [
+        // Un GSLT ne peut pas etre utilise par plusieurs serveurs publics en
+        // parallele. En mode local, Steam se connecte anonymement et la cle
+        // WebAPI reste disponible pour les maps Workshop.
+        `SRCDS_TOKEN=${DYNAMIC_CS2_LAN === '1' ? '' : process.env.STEAM_GSLT_TOKEN}`,
+        `CS2_SERVERNAME=${payload.serverName}`,
+        `CS2_MAXPLAYERS=${payload.maxPlayers}`,
+        `CS2_PORT=${nextPort}`,
+        'CS2_IP=0.0.0.0',
+        `CS2_LAN=${DYNAMIC_CS2_LAN}`,
+        'CS2_SERVER_HIBERNATE=0',
+        `CS2_RCONPW=${rconPassword}`,
+        'STEAMAPPVALIDATE=0',
+        `CS2_ADDITIONAL_ARGS=${args}`,
+        'CS2_STARTMAP=de_inferno',
+    ];
+
+    console.log(`[CREATE] Serveur "${payload.serverName}" | Port ${nextPort} | Map : ${mapLabel}`);
+
+    const container = await docker.createContainer({
+        Image: CS2_IMAGE,
+        name: `cs2-surf-${nextPort}`,
+        HostConfig: {
+            NetworkMode: 'host',
+            Binds: [`${CS2_DATA_PATH}:/home/steam/cs2-dedicated/`],
+            RestartPolicy: { Name: 'unless-stopped' },
+            Memory: CONTAINER_MEMORY_MB * 1024 * 1024,
+            NanoCpus: Math.round(CONTAINER_CPU_LIMIT * 1_000_000_000),
+            PidsLimit: CONTAINER_PIDS_LIMIT,
+            Init: true,
+            LogConfig: {
+                Type: 'json-file',
+                Config: {
+                    'max-size': '20m',
+                    'max-file': '3',
+                },
+            },
+        },
+        Env: envVars,
+        Labels: {
+            'surflab.managed': 'true',
+            'surflab.owner': payload.ownerId || '',
+        },
+    });
+
+    const expiresAt = new Date(Date.now() + payload.durationMinutes * 60_000).toISOString();
+    let serverId = null;
+    try {
+        const result = await db.run(
+            `INSERT INTO servers
+                (name, maxPlayers, mapId, port, containerId, status, ownerId, durationMinutes, expiresAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [payload.serverName, payload.maxPlayers, payload.mapId, nextPort, container.id,
+                'starting', payload.ownerId, payload.durationMinutes, expiresAt]
+        );
+        serverId = result.lastID;
+        await container.start();
+        monitorServerBoot(container, serverId, nextPort, {
+            mapId: workshopMapId,
+            mapSlug: workshopMapSlug,
+            rconPassword,
+            serverName: payload.serverName,
+        });
+    } catch (err) {
+        try { await container.remove({ force: true }); } catch (_) {}
+        if (serverId) {
+            await db.run(
+                "UPDATE servers SET status = 'error', failureReason = ?, updatedAt = datetime('now') WHERE id = ?",
+                [err.message, serverId]
+            );
+        }
+        throw err;
+    }
+
+    return {
+        success: true,
+        id: serverId,
+        port: nextPort,
+        containerId: container.id,
+        status: 'starting',
+        joinUrl: `steam://connect/${SERVER_IP}:${nextPort}`,
+        durationMinutes: payload.durationMinutes,
+        expiresAt,
+    };
 }
 
 // ── CREATE ─────────────────────────────────────────────────────────────────
 
-app.post('/api/servers/create', async (req, res) => {
-    const { mapId, maxPlayers, serverName, ownerId } = req.body;
-
+app.post('/api/servers/create', createRateLimit, async (req, res) => {
+    const validated = validateCreatePayload(req.body || {}, {
+        defaultDuration: DEFAULT_DURATION_MINUTES,
+        minDuration: MIN_DURATION_MINUTES,
+        maxDuration: MAX_DURATION_MINUTES,
+        maxPlayers: MAX_PLAYERS_PER_SERVER,
+        requireMapId: true,
+        requireOwnerId: true,
+    });
+    if (validated.error) {
+        return res.status(400).json({ success: false, error: validated.error });
+    }
     try {
-        const last     = await db.get('SELECT port FROM servers ORDER BY port DESC LIMIT 1');
-        const nextPort = last ? last.port + 1 : 27015;
-
-        try { await docker.getContainer(`cs2-surf-${nextPort}`).remove({ force: true }); } catch (_) {}
-
-        const envVars = [
-            `SRCDS_TOKEN=448FD82D909B98549B1632E675948E5B`,
-            `CS2_SERVERNAME=${serverName}`,
-            `CS2_MAXPLAYERS=${maxPlayers}`,
-            `CS2_PORT=${nextPort}`,
-            `CS2_IP=0.0.0.0`,
-            `CS2_SERVER_HIBERNATE=0`,
-            ...(!mapId ? [`CS2_STARTMAP=de_inferno`] : []),
-        ];
-
-        // ── Résolution de la map ───────────────────────────────────────────
-        let mapLabel = 'de_inferno (défaut)';
-        let args = `+hostname "${serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey 8D296C16EA9BC9D7629C2D63717B3F6F`;
-
-        if (mapId) {
-            const mapRow = await db.get('SELECT * FROM maps WHERE id = ?', [mapId]);
-            if (mapRow) {
-                mapLabel = `${mapRow.name} (${mapRow.slug}) — Workshop ID ${mapId} ✅`;
-                console.log(`[MAP] Map workshop trouvée en DB : ${mapLabel}`);
-            } else {
-                mapLabel = `Workshop ID ${mapId} ⚠️  (non référencée en DB)`;
-                console.warn(`[MAP] Map workshop NON trouvée en DB pour l'ID ${mapId} — chargement quand même`);
-            }
-            args += ` +host_workshop_map ${mapId}`;
-
-            await preloadWorkshopMap(mapId);
-        } else {
-            console.log(`[MAP] Aucun mapId fourni — map standard : de_inferno`);
-            args += ` +map de_inferno`;
-        }
-
-        envVars.push(`CS2_ADDITIONAL_ARGS=${args}`);
-
-        console.log(`[CREATE] Serveur "${serverName}" | Port ${nextPort} | Map : ${mapLabel}`);
-        console.log(`[CREATE] Args CS2 : ${args}`);
-
-        const container = await docker.createContainer({
-            Image: 'joedwards32/cs2',
-            name:  `cs2-surf-${nextPort}`,
-            HostConfig: {
-                NetworkMode: 'host',
-                Binds: ['/home/steam/cs2_data:/home/steam/cs2-dedicated/'],
-            },
-            Env: envVars,
-        });
-
-        await container.start();
-
-        const result = await db.run(
-            'INSERT INTO servers (name, maxPlayers, mapId, port, containerId, status, ownerId) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [serverName, maxPlayers, mapId, nextPort, container.id, 'starting', ownerId ?? null]
-        );
-
-        monitorServerBoot(container, result.lastID, nextPort);
-
-        res.json({
-            success:     true,
-            id:          result.lastID,
-            port:        nextPort,
-            containerId: container.id,
-            status:      'starting',
-        });
-
+        const result = await enqueueCreate(() => createGameServer(validated.value));
+        res.json(result);
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     }
 });
 
@@ -230,7 +460,7 @@ app.post('/api/servers/create', async (req, res) => {
 app.get('/api/servers', async (req, res) => {
     try {
         const page  = Math.max(1, parseInt(req.query.page)  || 1);
-        const limit = Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT));
 
         const rows   = await db.all('SELECT * FROM servers ORDER BY createdAt DESC');
         const paged  = paginate(rows, page, limit);
@@ -255,7 +485,7 @@ app.get('/api/servers', async (req, res) => {
 app.get('/api/servers/user/:ownerId', async (req, res) => {
     try {
         const page  = Math.max(1, parseInt(req.query.page)  || 1);
-        const limit = Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT));
 
         const rows  = await db.all(
             'SELECT * FROM servers WHERE ownerId = ? ORDER BY createdAt DESC',
@@ -280,28 +510,56 @@ app.get('/api/servers/user/:ownerId', async (req, res) => {
 
 // ── SYNC : statuts de tous les serveurs ────────────────────────────────────
 
+async function resolveContainer(server) {
+    const candidates = [
+        server.containerId,
+        server.port ? `cs2-surf-${server.port}` : null,
+    ].filter(Boolean);
+    for (const id of [...new Set(candidates)]) {
+        try {
+            const container = docker.getContainer(id);
+            const info = await container.inspect();
+            return { container, info };
+        } catch (err) {
+            if (err.statusCode !== 404) throw err;
+        }
+    }
+    return null;
+}
+
+async function syncServerStatus(server) {
+    const resolved = await resolveContainer(server);
+    let status = server.status;
+    let containerId = server.containerId;
+    let failureReason = server.failureReason;
+
+    if (!resolved) {
+        if (status !== 'expired') status = 'missing';
+    } else {
+        containerId = resolved.info.Id;
+        if (server.status === 'expired') {
+            status = 'expired';
+        } else if (resolved.info.State.Status === 'exited' || resolved.info.State.Status === 'dead') {
+            status = 'stopped';
+        } else if (resolved.info.State.Running && server.status !== 'starting') {
+            status = 'running';
+            failureReason = null;
+        }
+    }
+
+    if (status !== server.status || containerId !== server.containerId || failureReason !== server.failureReason) {
+        await db.run(
+            "UPDATE servers SET status = ?, containerId = ?, failureReason = ?, updatedAt = datetime('now') WHERE id = ?",
+            [status, containerId, failureReason, server.id]
+        );
+    }
+    return { id: String(server.id), status };
+}
+
 app.get('/api/servers/sync', async (req, res) => {
     try {
         const servers = await db.all('SELECT * FROM servers');
-
-        const synced = await Promise.all(servers.map(async (server) => {
-            let status = server.status;
-            try {
-                const info = await docker.getContainer(server.containerId).inspect();
-                if (info.State.Running) {
-                    status = 'running';
-                } else if (info.State.Status === 'exited') {
-                    status = 'stopped';
-                }
-                if (status !== server.status) {
-                    await db.run(
-                        "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
-                        [status, server.id]
-                    );
-                }
-            } catch {}
-            return { id: String(server.id), status };
-        }));
+        const synced = await Promise.all(servers.map(syncServerStatus));
 
         res.json({ success: true, data: synced });
     } catch (err) {
@@ -317,23 +575,8 @@ app.get('/api/servers/:id/sync', async (req, res) => {
         const server = await db.get('SELECT * FROM servers WHERE id = ?', [req.params.id]);
         if (!server) return res.status(404).json({ success: false, message: 'Serveur introuvable.' });
 
-        let status = server.status;
-        try {
-            const info = await docker.getContainer(server.containerId).inspect();
-            if (info.State.Running) {
-                status = 'running';
-            } else if (info.State.Status === 'exited') {
-                status = 'stopped';
-            }
-            if (status !== server.status) {
-                await db.run(
-                    "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
-                    [status, server.id]
-                );
-            }
-        } catch {}
-
-        res.json({ success: true, data: { id: String(server.id), status } });
+        const synced = await syncServerStatus(server);
+        res.json({ success: true, data: synced });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
@@ -359,36 +602,21 @@ app.post('/api/servers/:id/stop', async (req, res) => {
     try {
         const server = await db.get('SELECT * FROM servers WHERE id = ?', [req.params.id]);
         if (!server) return res.status(404).json({ success: false, message: "Serveur introuvable." });
+        assertOwnerAccess(server, req.body?.ownerId);
 
-        let stopped = false;
-        try {
-            await docker.getContainer(server.containerId).stop();
-            stopped = true;
-        } catch (err) {
-            console.warn(`Stop by ID failed (${server.containerId}):`, err.statusCode, err.message);
-        }
-
-        if (!stopped) {
-            try {
-                await docker.getContainer(`cs2-surf-${server.port}`).stop();
-                stopped = true;
-            } catch (err) {
-                console.warn(`Stop by name failed (cs2-surf-${server.port}):`, err.statusCode, err.message);
-            }
-        }
-
-        if (!stopped) {
-            return res.status(500).json({ success: false, error: 'Impossible d\'arrêter le container' });
+        const resolved = await resolveContainer(server);
+        if (resolved?.info.State.Running) {
+            await resolved.container.stop({ t: 30 });
         }
 
         await db.run(
-            "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
+            "UPDATE servers SET status = ?, stoppedAt = datetime('now'), updatedAt = datetime('now') WHERE id = ?",
             ['stopped', server.id]
         );
 
         res.json({ success: true, message: `Serveur ${server.id} arrêté.` });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     }
 });
 
@@ -399,20 +627,42 @@ app.post('/api/servers/:id/restart', async (req, res) => {
     try {
         const server = await db.get('SELECT * FROM servers WHERE id = ?', [req.params.id]);
         if (!server) return res.status(404).json({ success: false, message: "Serveur introuvable." });
+        assertOwnerAccess(server, req.body?.ownerId);
 
-        const container = docker.getContainer(server.containerId);
-        await container.restart();
+        if (server.status === 'expired' || (server.expiresAt && Date.parse(server.expiresAt) <= Date.now())) {
+            return res.status(409).json({ success: false, message: 'Ce serveur a expire et ne peut plus etre redemarre.' });
+        }
+
+        const resolved = await resolveContainer(server);
+        if (!resolved) {
+            return res.status(409).json({ success: false, message: 'Le conteneur de ce serveur est introuvable.' });
+        }
+        if (resolved.info.State.Running) {
+            await resolved.container.restart({ t: 30 });
+        } else {
+            await resolved.container.start();
+        }
 
         await db.run(
-            "UPDATE servers SET status = ?, updatedAt = datetime('now') WHERE id = ?",
-            ['starting', server.id]
+            "UPDATE servers SET status = ?, containerId = ?, stoppedAt = NULL, failureReason = NULL, updatedAt = datetime('now') WHERE id = ?",
+            ['starting', resolved.info.Id, server.id]
         );
 
-        monitorServerBoot(container, server.id, server.port);
+        let workshop = null;
+        if (server.mapId) {
+            const mapRow = await db.get('SELECT slug FROM maps WHERE id = ?', [server.mapId]);
+            workshop = {
+                mapId: normalizeWorkshopId(server.mapId),
+                mapSlug: mapRow?.slug || null,
+                rconPassword: getContainerEnv(resolved.info, 'CS2_RCONPW') || 'changeme',
+                serverName: server.name,
+            };
+        }
+        monitorServerBoot(resolved.container, server.id, server.port, workshop);
 
         res.json({ success: true, message: `Serveur ${server.id} en cours de redémarrage.`, status: 'starting' });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     }
 });
 
@@ -424,19 +674,18 @@ app.delete('/api/servers/delete/:id', async (req, res) => {
     try {
         const server = await db.get('SELECT * FROM servers WHERE id = ?', [req.params.id]);
         if (!server) return res.status(404).json({ success: false, message: "Serveur non trouvé." });
-        if (server.ownerId && String(server.ownerId) !== String(ownerId)) {
-            return res.status(403).json({ success: false, message: "Non autorisé." });
-        }
+        assertOwnerAccess(server, ownerId);
 
-        if (!server.containerId.startsWith('simulated')) {
-            try { await docker.getContainer(server.containerId).remove({ force: true }); } catch (_) {}
+        if (!String(server.containerId || '').startsWith('simulated')) {
+            const resolved = await resolveContainer(server);
+            if (resolved) await resolved.container.remove({ force: true });
         }
 
         await db.run('DELETE FROM servers WHERE id = ?', [req.params.id]);
         res.json({ success: true, message: `Serveur ID ${req.params.id} supprimé.` });
 
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(err.statusCode || 500).json({ success: false, error: err.message });
     }
 });
 
@@ -451,4 +700,311 @@ app.get('/api/maps', async (req, res) => {
     }
 });
 
-app.listen(3000, () => console.log("Backend sur port 3000"));
+// ── STATS / LEADERBOARD (plugin SharpTimer — base SQLite, lecture seule) ────
+
+let statsDb = null;
+async function getStatsDb() {
+    if (statsDb) return statsDb;
+    if (!require('fs').existsSync(STATS_DB_PATH)) return null;   // pas encore créée par le plugin
+    statsDb = await open({
+        filename: STATS_DB_PATH,
+        driver:   sqlite3.Database,
+        mode:     sqlite3.OPEN_READONLY,
+    });
+    await statsDb.exec('PRAGMA busy_timeout = 3000');  // les serveurs de jeu écrivent en parallèle
+    return statsDb;
+}
+
+const ticksToSeconds = (ticks) => Math.round((ticks / 64) * 1000) / 1000;
+
+function statsError(res, err) {
+    statsDb = null;   // fichier recréé/wipé -> on rouvrira à la prochaine requête
+    res.status(500).json({ success: false, error: err.message });
+}
+
+// Classement global (points gagnés en finissant les maps)
+app.get('/api/stats/leaderboard', async (req, res) => {
+    try {
+        const sdb = await getStatsDb();
+        if (!sdb) return res.json({ success: true, available: false, total: 0, data: [] });
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
+        const rows = await sdb.all(
+            `SELECT SteamID, PlayerName, GlobalPoints, TimesConnected, LastConnected
+               FROM PlayerStats
+              WHERE GlobalPoints > 0
+              ORDER BY GlobalPoints DESC
+              LIMIT ?`, [limit]);
+        res.json({
+            success: true, available: true, total: rows.length,
+            data: rows.map((r, i) => ({
+                rank: i + 1,
+                steamId: r.SteamID,
+                name: r.PlayerName,
+                points: r.GlobalPoints,
+                timesConnected: r.TimesConnected,
+                lastConnected: r.LastConnected,
+            })),
+        });
+    } catch (err) { statsError(res, err); }
+});
+
+// Top temps d'une map (records) — ?limit=50&style=0
+app.get('/api/stats/maps/:mapName/records', async (req, res) => {
+    try {
+        const sdb = await getStatsDb();
+        if (!sdb) return res.json({ success: true, available: false, total: 0, data: [] });
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
+        const style = parseInt(req.query.style) || 0;
+        // meilleur temps par joueur (toutes sessions confondues)
+        const rows = await sdb.all(
+            `SELECT SteamID, PlayerName, MIN(TimerTicks) AS TimerTicks,
+                    FormattedTime, UnixStamp, TimesFinished
+               FROM PlayerRecords
+              WHERE MapName = ? AND Style = ?
+              GROUP BY SteamID
+              ORDER BY TimerTicks ASC
+              LIMIT ?`, [req.params.mapName, style, limit]);
+        res.json({
+            success: true, available: true, map: req.params.mapName, style, total: rows.length,
+            data: rows.map((r, i) => ({
+                rank: i + 1,
+                steamId: r.SteamID,
+                name: r.PlayerName,
+                time: r.FormattedTime,
+                seconds: ticksToSeconds(r.TimerTicks),
+                timerTicks: r.TimerTicks,
+                timesFinished: r.TimesFinished,
+                date: r.UnixStamp,
+            })),
+        });
+    } catch (err) { statsError(res, err); }
+});
+
+// Records récents (tous serveurs/maps) — ?limit=20
+app.get('/api/stats/records/recent', async (req, res) => {
+    try {
+        const sdb = await getStatsDb();
+        if (!sdb) return res.json({ success: true, available: false, total: 0, data: [] });
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+        const rows = await sdb.all(
+            `SELECT MapName, SteamID, PlayerName, TimerTicks, FormattedTime, UnixStamp
+               FROM PlayerRecords
+              ORDER BY UnixStamp DESC
+              LIMIT ?`, [limit]);
+        res.json({
+            success: true, available: true, total: rows.length,
+            data: rows.map(r => ({
+                map: r.MapName,
+                steamId: r.SteamID,
+                name: r.PlayerName,
+                time: r.FormattedTime,
+                seconds: ticksToSeconds(r.TimerTicks),
+                date: r.UnixStamp,
+            })),
+        });
+    } catch (err) { statsError(res, err); }
+});
+
+// Profil d'un joueur : stats globales + ses records par map
+app.get('/api/stats/players/:steamid', async (req, res) => {
+    try {
+        const sdb = await getStatsDb();
+        if (!sdb) return res.json({ success: true, available: false, data: null });
+        const stats = await sdb.get(
+            `SELECT SteamID, PlayerName, GlobalPoints, TimesConnected, LastConnected, IsVip
+               FROM PlayerStats WHERE SteamID = ?`, [req.params.steamid]);
+        if (!stats) return res.status(404).json({ success: false, error: 'Joueur inconnu.' });
+        const records = await sdb.all(
+            `SELECT MapName, TimerTicks, FormattedTime, UnixStamp, TimesFinished, Style
+               FROM PlayerRecords WHERE SteamID = ?
+              ORDER BY MapName ASC, Style ASC`, [req.params.steamid]);
+        const better = await sdb.get(
+            `SELECT COUNT(*) AS n FROM PlayerStats WHERE GlobalPoints > ?`, [stats.GlobalPoints]);
+        res.json({
+            success: true, available: true,
+            data: {
+                steamId: stats.SteamID,
+                name: stats.PlayerName,
+                points: stats.GlobalPoints,
+                rank: (better?.n ?? 0) + 1,
+                timesConnected: stats.TimesConnected,
+                lastConnected: stats.LastConnected,
+                isVip: !!stats.IsVip,
+                records: records.map(r => ({
+                    map: r.MapName,
+                    time: r.FormattedTime,
+                    seconds: ticksToSeconds(r.TimerTicks),
+                    timesFinished: r.TimesFinished,
+                    style: r.Style,
+                    date: r.UnixStamp,
+                })),
+            },
+        });
+    } catch (err) { statsError(res, err); }
+});
+
+// Résumé global (pour la home du site) : compteurs + record par map
+app.get('/api/stats/summary', async (req, res) => {
+    try {
+        const sdb = await getStatsDb();
+        if (!sdb) return res.json({ success: true, available: false, data: null });
+        const players = await sdb.get(`SELECT COUNT(*) AS n FROM PlayerStats`);
+        const records = await sdb.get(`SELECT COUNT(*) AS n FROM PlayerRecords`);
+        const maps = await sdb.all(
+            `SELECT MapName, COUNT(DISTINCT SteamID) AS players,
+                    MIN(TimerTicks) AS best, FormattedTime AS bestTime, PlayerName AS bestBy
+               FROM PlayerRecords
+              WHERE Style = 0
+              GROUP BY MapName
+              ORDER BY MapName ASC`);
+        res.json({
+            success: true, available: true,
+            data: {
+                totalPlayers: players?.n ?? 0,
+                totalRecords: records?.n ?? 0,
+                maps: maps.map(m => ({
+                    map: m.MapName,
+                    players: m.players,
+                    bestTime: m.bestTime,
+                    bestSeconds: ticksToSeconds(m.best),
+                    bestBy: m.bestBy,
+                })),
+            },
+        });
+    } catch (err) { statsError(res, err); }
+});
+
+
+// ── MONITORING PÉRIODIQUE ───────────────────────────────────────────────────
+async function reconcileAllServers() {
+    try {
+        const servers = await db.all('SELECT * FROM servers');
+        for (const server of servers) {
+            try {
+                const synced = await syncServerStatus(server);
+                if (synced.status !== server.status) {
+                    console.log(`[MONITOR] Serveur ${server.id} : ${server.status} -> ${synced.status}`);
+                }
+            } catch (err) {
+                console.warn(`[MONITOR] Serveur ${server.id}:`, err.message);
+            }
+        }
+    } catch (err) {
+        console.warn('[MONITOR] reconcile:', err.message);
+    }
+}
+
+async function expireServers() {
+    const expired = await db.all(
+        `SELECT * FROM servers
+          WHERE expiresAt IS NOT NULL
+            AND datetime(expiresAt) <= datetime('now')
+            AND status IN ('starting', 'running', 'stopped', 'missing', 'timeout', 'error', 'error_steam_auth')`
+    );
+    for (const server of expired) {
+        try {
+            const resolved = await resolveContainer(server);
+            if (resolved?.info.State.Running) {
+                await resolved.container.stop({ t: 30 });
+            }
+            if (resolved) await resolved.container.remove({ force: true });
+            await db.run(
+                `UPDATE servers
+                    SET status = 'expired', stoppedAt = datetime('now'),
+                        lastPort = port, port = NULL,
+                        failureReason = NULL, updatedAt = datetime('now')
+                  WHERE id = ?`,
+                [server.id]
+            );
+            console.log(`[EXPIRE] Serveur ${server.id} supprime apres expiration.`);
+        } catch (err) {
+            await db.run(
+                "UPDATE servers SET failureReason = ?, updatedAt = datetime('now') WHERE id = ?",
+                [`Expiration cleanup: ${err.message}`, server.id]
+            );
+            console.warn(`[EXPIRE] Serveur ${server.id}:`, err.message);
+        }
+    }
+}
+
+let maintenanceRunning = false;
+async function runMaintenance() {
+    if (maintenanceRunning) return;
+    maintenanceRunning = true;
+    try {
+        await expireServers();
+        await reconcileAllServers();
+    } finally {
+        maintenanceRunning = false;
+    }
+}
+
+app.get('/api/health', async (req, res) => {
+    try {
+        await db.get('SELECT 1 AS ok');
+        await docker.ping();
+        const apiAuthentication = !!SURFLAB_API_KEY;
+        res.status(apiAuthentication ? 200 : 503).json({
+            success: apiAuthentication,
+            service: 'surflab-v3',
+            database: true,
+            docker: true,
+            apiAuthentication,
+        });
+    } catch (err) {
+        res.status(503).json({
+            success: false,
+            service: 'surflab-v3',
+            database: !!db,
+            docker: false,
+            apiAuthentication: !!SURFLAB_API_KEY,
+            error: err.message,
+        });
+    }
+});
+
+app.use((err, req, res, next) => {
+    if (err?.type === 'entity.parse.failed') {
+        return res.status(400).json({ success: false, error: 'Corps JSON invalide.' });
+    }
+    console.error('[HTTP]', err);
+    res.status(500).json({ success: false, error: 'Erreur interne.' });
+});
+
+async function start() {
+    db = await setupDb();
+    console.log('Base de donnees SQLite prete.');
+    await runMaintenance();
+    setInterval(runMaintenance, 30000).unref();
+    httpServer = app.listen(PORT, BIND_ADDRESS, () =>
+        console.log(`Backend sur ${BIND_ADDRESS}:${PORT}`)
+    );
+}
+
+start().catch((err) => {
+    console.error('[STARTUP] Echec du backend:', err);
+    process.exitCode = 1;
+});
+
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[SHUTDOWN] ${signal}`);
+    const forceExit = setTimeout(() => process.exit(1), 15000);
+    forceExit.unref();
+    if (httpServer) {
+        await new Promise(resolve => httpServer.close(resolve));
+    }
+    if (statsDb) await statsDb.close().catch(() => {});
+    if (db) await db.close().catch(() => {});
+    clearTimeout(forceExit);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM').catch(err => {
+    console.error('[SHUTDOWN]', err);
+    process.exitCode = 1;
+}));
+process.on('SIGINT', () => shutdown('SIGINT').catch(err => {
+    console.error('[SHUTDOWN]', err);
+    process.exitCode = 1;
+}));

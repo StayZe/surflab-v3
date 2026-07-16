@@ -1,0 +1,15 @@
+:80 {
+
+  # 1) Route /api/* vers le service "api" (conteneur docker) sur le port 8000
+  handle /api/* {
+    # On retire le prefix /api avant d'envoyer à l'API
+    uri strip_prefix /api
+    reverse_proxy api:8000
+  }
+
+  # 2) Tout le reste (/) = fichiers statiques du frontend
+  handle {
+    root * /srv
+    file_server
+  }
+}

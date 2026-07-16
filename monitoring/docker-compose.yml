@@ -1,0 +1,61 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    init: true
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:80:80"
+      - "10.255.0.26:80:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend:/srv:ro
+    depends_on:
+      - api
+    networks:
+      - surflab_web
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    init: true
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      # Accès au Docker socket pour lister les containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Accès aux logs de MAJ
+      - /var/log/cs2-update.log:/var/log/cs2-update.log:ro
+      # Manifest CS2 des serveurs dynamiques (build ID)
+      - /home/steam/cs2_data/steamapps:/data/steamapps:ro
+    networks:
+      - surflab_web
+      # Accès au réseau host pour les queries A2S vers les serveurs CS2
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  surflab_web:
+    name: surflab_web
+    external: true

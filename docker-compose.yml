@@ -2,13 +2,31 @@ services:
   backend:
     build: ./backend
     container_name: cs2-manager-api
-    restart: always
+    restart: unless-stopped
+    init: true
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 45s
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/database.sqlite:/app/database.sqlite
       - ./backend/.env:/app/.env
-      - /home/steam/cs2_data:/app/cs2_data # <--- AJOUTE CETTE LIGNE
+      - /home/steam/cs2_data:/app/cs2_data
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+      - "10.255.0.26:3000:3000"
     env_file:
       - ./backend/.env
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

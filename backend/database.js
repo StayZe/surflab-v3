@@ -10,9 +10,9 @@ const DEFAULT_MAPS = [
     { id: '3617159277', name: 'Inside-Out',   slug: 'surf_insideout', difficulty: 'T3'   },
 ];
 
-async function setupDb() {
+async function setupDb(filename = './database.sqlite') {
     const db = await open({
-        filename: './database.sqlite',
+        filename,
         driver: sqlite3.Database
     });
 
@@ -23,6 +23,7 @@ async function setupDb() {
             maxPlayers  INTEGER,
             mapId       TEXT,
             port        INTEGER  UNIQUE,
+            lastPort    INTEGER,
             containerId TEXT,
             status      TEXT,
             ownerId     TEXT,
@@ -45,6 +46,35 @@ async function setupDb() {
     if (!cols.find(c => c.name === 'ownerId')) {
         await db.exec("ALTER TABLE servers ADD COLUMN ownerId TEXT");
     }
+
+    // Migrations additives uniquement : la base existante et son historique
+    // restent en place lors d'une mise a jour du backend.
+    const migrations = [
+        ['durationMinutes', 'INTEGER'],
+        ['expiresAt', 'DATETIME'],
+        ['stoppedAt', 'DATETIME'],
+        ['failureReason', 'TEXT'],
+        ['lastPort', 'INTEGER'],
+    ];
+    for (const [name, type] of migrations) {
+        if (!cols.find(c => c.name === name)) {
+            await db.exec(`ALTER TABLE servers ADD COLUMN ${name} ${type}`);
+        }
+    }
+
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_servers_status ON servers(status)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_servers_owner ON servers(ownerId)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_servers_expires ON servers(expiresAt)');
+
+    // Une ligne expiree reste dans l'historique, mais son port doit redevenir
+    // disponible. SQLite autorise plusieurs NULL dans une colonne UNIQUE.
+    await db.exec(`
+        UPDATE servers
+           SET lastPort = port,
+               port = NULL
+         WHERE status = 'expired'
+           AND port IS NOT NULL
+    `);
 
     for (const map of DEFAULT_MAPS) {
         await db.run(

@@ -5,10 +5,14 @@ npm-debug.log*
 # Environnement et Secrets (CRITIQUE)
 .env
 .env.local
+.env.*
+!.env.example
 
 # Base de données SQLite
 backend/database.sqlite
 backend/database.sqlite-journal
+backend/database.sqlite-shm
+backend/database.sqlite-wal
 
 # Fichiers de configuration générés par l'API
 # On ignore les fichiers auto_PORT.cfg pour ne pas commit les configs des serveurs créés
@@ -22,3 +26,15 @@ cs2_data/
 # OS
 .DS_Store
 Thumbs.db
+# binaires plugins CS2 (175 Mo) + données runtime
+plugins/addons/
+plugins/cfg/SharpTimer/database.db
+plugins/cfg/SharpTimer/mysqlConfig.json
+plugins/cfg/SharpTimer/postgresConfig.json
+plugins/cfg/SharpTimer/discordConfig.json
+
+# Fichiers Python et sauvegardes locales
+__pycache__/
+*.pyc
+*.bak-*
+backups/
