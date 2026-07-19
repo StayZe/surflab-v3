@@ -10,6 +10,7 @@ LOG_FILE="${LOG_FILE:-/var/log/cs2-update.log}"
 LOCK_FILE="${LOCK_FILE:-/tmp/surflab-cs2-update.lock}"
 MANAGER_CONTAINER="${MANAGER_CONTAINER:-cs2-manager-api}"
 BOOT_WAIT_SECONDS="${BOOT_WAIT_SECONDS:-1200}"
+STEAMCMD_MAX_ATTEMPTS="${STEAMCMD_MAX_ATTEMPTS:-3}"
 APP_ID=730
 VALIDATE=0
 FORCE=0
@@ -81,7 +82,9 @@ wait_until_ready() {
       return 1
     fi
     logs="$(docker logs --since "$since" "$name" 2>&1 || true)"
-    if grep -q 'GameServerSteamAPIActivated()' <<<"$logs"; then
+    if grep -Eq \
+      'GameServerSteamAPIActivated\(\)|SetServerState \(ss_loading -> ss_active\)|\[STARTUP\].*activated session on GC' \
+      <<<"$logs"; then
       log "$name est pret"
       return 0
     fi
@@ -177,6 +180,7 @@ backup_runtime_data
 
 STEAM_ARGS=(
   +force_install_dir "$CS2_DIR"
+  +@bClientTryRequestManifestWithoutCode 1
   +login anonymous
   +app_update 730
 )
@@ -191,18 +195,43 @@ CS2_OWNER_GROUP="$(id -gn "$CS2_OWNER")"
 CS2_ACCESS_GROUP="${CS2_ACCESS_GROUP:-$(stat -c '%G' "$(dirname "$CS2_DIR")")}"
 STEAMCMD_HOME="${STEAMCMD_HOME:-/var/tmp/surflab-steamcmd-$CS2_OWNER}"
 log "Mise a jour de $CS2_DIR avec SteamCMD (utilisateur $CS2_OWNER, groupe $CS2_ACCESS_GROUP)"
+
+run_steamcmd() {
+  if [[ "$CS2_OWNER" != "root" ]] && command -v runuser >/dev/null; then
+    runuser -u "$CS2_OWNER" -g "$CS2_ACCESS_GROUP" -- \
+      env HOME="$STEAMCMD_HOME" "$STEAMCMD" "${STEAM_ARGS[@]}"
+  else
+    "$STEAMCMD" "${STEAM_ARGS[@]}"
+  fi
+}
+
 if [[ "$CS2_OWNER" != "root" ]] && command -v runuser >/dev/null; then
   install -d -m 700 -o "$CS2_OWNER" -g "$CS2_OWNER_GROUP" "$STEAMCMD_HOME"
-  if ! runuser -u "$CS2_OWNER" -g "$CS2_ACCESS_GROUP" -- \
-    env HOME="$STEAMCMD_HOME" "$STEAMCMD" "${STEAM_ARGS[@]}"; then
-    log "ERREUR SteamCMD a echoue"
-    exit 1
+fi
+
+STEAMCMD_RC=1
+for (( attempt=1; attempt<=STEAMCMD_MAX_ATTEMPTS; attempt++ )); do
+  log "SteamCMD tentative $attempt/$STEAMCMD_MAX_ATTEMPTS"
+  if run_steamcmd 2>&1 | tee -a "$LOG_FILE"; then
+    STEAMCMD_RC=0
+    break
+  else
+    STEAMCMD_RC=${PIPESTATUS[0]}
   fi
-else
-  if ! "$STEAMCMD" "${STEAM_ARGS[@]}"; then
-    log "ERREUR SteamCMD a echoue"
-    exit 1
+
+  log "WARN SteamCMD a echoue (code $STEAMCMD_RC)"
+  if (( attempt < STEAMCMD_MAX_ATTEMPTS )); then
+    # Les telechargements et manifestes partiels peuvent provoquer des erreurs
+    # SteamPipe/HTTP 401. Le manifeste installe est conserve pour permettre au
+    # serveur de redemarrer si toutes les tentatives echouent.
+    rm -rf "$CS2_DIR/steamapps/downloading" "$CS2_DIR/steamapps/temp"
+    sleep 5
   fi
+done
+
+if (( STEAMCMD_RC != 0 )); then
+  log "ERREUR SteamCMD a echoue apres $STEAMCMD_MAX_ATTEMPTS tentatives"
+  exit "$STEAMCMD_RC"
 fi
 
 AFTER_BUILD="$(read_build)"

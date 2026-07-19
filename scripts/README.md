@@ -8,8 +8,10 @@ les deux bases SQLite a l'abri, arrete temporairement le backend, puis
 redemarre les conteneurs `cs2-surf-*` un par un.
 
 SteamCMD est execute avec l'utilisateur proprietaire de `cs2_data`, le groupe
-d'acces de `/home/steam` et un HOME technique sous `/var/tmp`. Cela evite de
-dependre du repertoire `/home/surflab`, absent sur le serveur.
+d'acces de `/home/steam` et un HOME technique isole sous `/var/tmp`. Sa sortie
+complete est ajoutee a `/var/log/cs2-update.log`. En cas d'erreur SteamPipe, le
+script nettoie les telechargements partiels et retente jusqu'a trois fois sans
+supprimer le manifeste installe.
 
 ```bash
 cd /home/surflab-v3
@@ -21,6 +23,10 @@ reserver a une installation corrompue car elle est beaucoup plus longue.
 
 Le journal reste `/var/log/cs2-update.log`, donc le monitoring existant
 continue de fonctionner sans changement.
+
+Le redemarrage est considere pret avec les marqueurs CS2 actuels de session GC
+ou d'etat `ss_active`. Le backend reprend ensuite la main et recharge par RCON
+la map Workshop attendue si le conteneur a d'abord demarre sur une map vanilla.
 
 ## Controle automatique toutes les 6 heures
 

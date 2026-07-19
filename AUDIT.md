@@ -4,8 +4,9 @@
 
 Oui, `/home/surflab-v3` est bien le projet qui genere les serveurs a la demande.
 Son backend recoit les parametres, cree les conteneurs `cs2-surf-<port>` et
-monte `/home/steam/cs2_data` dans chaque serveur. `/home/cs2server` correspond
-au prototype de serveurs fixes et ne doit pas devenir la base du SaaS.
+monte `/home/steam/cs2_data` dans chaque serveur. `/home/cs2server`
+correspondait au prototype de serveurs fixes ; il a ete retire le 19 juillet
+2026 apres sauvegarde et 48 heures d'observation.
 
 ## Ce qui est deja fonctionnel
 
@@ -23,9 +24,9 @@ SharpTimer est installe, charge et configure. Le correctif SQLite du 15 juillet
 a permis d'enregistrer le joueur `yxmmy`, puis son premier record Boreas de
 `41.828 s`. Les routes publiques de records et de classement renvoient ces
 donnees. Les bases manager et SharpTimer repondent toutes les deux
-`PRAGMA integrity_check = ok`. Les quelques anciennes donnees MariaDB
-appartiennent au prototype fixe de `/home/cs2server` et ne sont pas utilisees
-par SurfLab v3.
+`PRAGMA quick_check = ok`. Les anciennes donnees MariaDB du prototype fixe
+restent disponibles dans la sauvegarde du 16 juillet, mais ne sont pas
+utilisees par SurfLab v3.
 
 STFixes est present comme binaire de secours mais volontairement desactive :
 son fichier VDF n'est pas charge, car ses signatures sont incompatibles avec
@@ -45,6 +46,8 @@ MovementUnlocker reste actif sur les serveurs dynamiques.
 - `STEAMAPPVALIDATE=0` pour les nouveaux conteneurs ;
 - chargement Workshop pilote par RCON apres la connexion Steam ;
 - statut `running` attribue uniquement apres le vrai `Spawn Server` de la map ;
+- recuperation automatique de la map Workshop attendue apres un redemarrage
+  Docker, une mise a jour CS2 ou un reboot du serveur ;
 - verrouillage des maps Surf : pas de limite de temps, vote vanilla, rotation,
   `nextlevel` ni bot ;
 - mot de passe RCON aleatoire pour chaque nouveau conteneur ;
@@ -53,14 +56,15 @@ MovementUnlocker reste actif sur les serveurs dynamiques.
 - liberation du port a l'expiration tout en conservant la ligne historique ;
 - statuts `missing` pour les lignes dont le conteneur a disparu ;
 - migrations SQLite additives, sans recreation de la base ;
-- script de mise a jour adapte aux conteneurs dynamiques.
+- script de mise a jour adapte aux conteneurs dynamiques, avec trois tentatives
+  SteamCMD, journal complet et detection des nouveaux marqueurs de demarrage.
 
 L'ancien cron de `/home/cs2server` a ete retire. Le crontab root execute
 maintenant `/home/surflab-v3/scripts/update-cs2.sh` toutes les 6 heures. Le
 script compare les builds avant toute action : aucun conteneur n'est arrete
 lorsque CS2 est deja a jour.
 
-## Etat du deploiement au 16 juillet 2026
+## Etat du deploiement au 19 juillet 2026
 
 - backend recree sans remplacer le `.env` ni `database.sqlite` ;
 - API saine, 6 maps et un serveur de recette actif sur le port 27026 ;
@@ -69,7 +73,7 @@ lorsque CS2 est deja a jour.
 - reutilisation reelle du port 27030 par un second serveur, puis suppression
   authentifiee sans laisser de conteneur ni de ligne temporaire ;
 - plage dynamique corrigee pour commencer a 27026 ;
-- installation partagee mise a jour au build CS2 24209309 ;
+- installation partagee mise a jour au build CS2 24248951 ;
 - Metamod 2.0.0-dev+1406, CounterStrikeSharp 1.0.371 et SharpTimer 0.4.0
   valides sur les conteneurs dynamiques ;
 - bases manager et SharpTimer controlees avec `PRAGMA integrity_check = ok` ;
@@ -78,9 +82,21 @@ lorsque CS2 est deja a jour.
 - serveur Boreas historique conserve sur 27026 comme environnement de recette ;
 - serveurs historiques 27027 a 27029 supprimes proprement via l'API ;
 - quatre conteneurs rollback supprimes apres validation de la nouvelle version ;
-- conteneurs fixes et MariaDB de `/home/cs2server` arretes de facon reversible
-  le 16 juillet ; leurs fichiers et volumes restent presents pendant
-  l'observation.
+- conteneurs fixes et MariaDB observes arretes pendant plus de 48 heures, puis
+  supprimes avec leurs volumes, images locales et reseau dedie ;
+- `/home/cs2server` supprime apres verification de l'archive distante et de sa
+  copie locale ; environ 67 Go ont ete recuperes ;
+- cycle force de mise a jour valide : sauvegarde runtime, SteamCMD, redemarrage
+  en 21 secondes, puis retour automatique de `de_inferno` a `surf_boreas`.
+- Ubuntu et Docker mis a jour, puis reboot valide sur le noyau
+  `6.8.0-136-generic` avec zero mise a jour restante ;
+- UFW actif au demarrage : SSH conserve, web/API/monitoring et plage CS2
+  limites aux reseaux VPN/prives, avec RCON/A2S autorises uniquement depuis les
+  deux reseaux Docker SurfLab ;
+- quatre anciens conteneurs dynamiques arretes depuis juin retires, leurs lignes
+  SQLite historiques restant conservees avec le statut `missing` ;
+- images Docker inutilisees purgees ; seules les cinq images des services
+  actifs restent presentes.
 
 La creation, le chargement Workshop, les reglages anti-vote, le redemarrage,
 l'expiration, la reutilisation du port et la suppression ont ete testes. Une
@@ -112,11 +128,12 @@ limite, les maps hors catalogue sont refusees et les quotas par defaut sont de
 8 serveurs actifs au total et 2 par utilisateur. Les conteneurs ont aussi des
 limites CPU, memoire, processus et journaux.
 
-Les ports 80 et 3000 n'ecoutent que sur localhost et `10.255.0.26`. Avant une
-exposition Internet, il reste a installer le domaine/TLS, limiter le pare-feu
-aux flux necessaires et restreindre l'API a l'adresse du backend du site. Le
-service reste entierement gratuit : ces limites protegent uniquement les
-ressources.
+Les ports 80, 8080 et 3000 n'ecoutent que sur localhost et `10.255.0.26`. UFW
+refuse par defaut les connexions entrantes et limite deja ces services ainsi
+que les ports CS2 aux reseaux prives/VPN. Avant une exposition Internet, il
+reste a installer le domaine/TLS et a restreindre l'API a l'adresse du backend
+du site. Le service reste entierement gratuit : ces limites protegent
+uniquement les ressources.
 
 ## A conserver
 
@@ -128,20 +145,21 @@ ressources.
 - le monitoring ;
 - le fichier `backend/.env` actuel et ses memes tokens.
 
-## Suppressions possibles, mais seulement apres accord explicite
+## Nettoyage termine
 
-1. Apres la periode d'observation, les conteneurs fixes arretes et la MariaDB
-   de `/home/cs2server`.
-2. `/home/cs2server/serverfiles`, doublon de l'installation CS2 (~66 Go).
-3. Les images Docker uniquement utilisees par le prototype fixe.
-4. L'image `cm2network/steamcmd` si aucun autre service ne l'utilise ; le
-   backend n'en a plus besoin pour chaque map.
-5. Le reste de `/home/cs2server`, apres avoir deplace son script utile et ses
-   sauvegardes.
+Le prototype fixe a ete retire le 19 juillet dans cet ordre : conteneurs,
+controle, volume MariaDB, images locales, reseau Docker, puis fichiers. Le
+chemin `/home/cs2server` n'existe plus. L'archive historique qu'il contenait
+reste incluse dans la sauvegarde verifiee du 16 juillet, stockee sous
+`/var/backups/surflab/20260716T1357Z/` et copiee sur le poste local. Son
+empreinte SHA-256 est
+`2a1b35e23e3bc5e414ac6d565bdc11a8727a45d19dfbb183a50cf6870af6de49`.
 
-L'archive distante historique situee sous `/home/cs2server/backups/` est deja
-incluse dans la sauvegarde verifiee du 16 juillet, stockee sous
-`/var/backups/surflab/20260716T1357Z/` et copiee sur le poste local.
+Quatre volumes Docker detaches d'une ancienne pile PostgreSQL ont ete archives
+avant suppression sous
+`/var/backups/surflab/legacy-docker-volumes-20260719T1304Z.tar.zst` et sur le
+poste local. Leur empreinte SHA-256 est
+`c132ffba71d119999e6c7bae0159cf138f21c1b9049865fc2f6060fdda308e98`.
 
 Les lignes historiques/stales de `backend/database.sqlite` ne sont pas
 supprimees automatiquement. Le backend les marque `missing`, ce qui permet de

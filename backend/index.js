@@ -6,7 +6,8 @@ const crypto       = require('crypto');
 const { PassThrough } = require('stream');
 const { setupDb }  = require('./database');
 const { pickAvailablePort, validateCreatePayload } = require('./validation');
-const { sendRconWithRetry } = require('./rcon');
+const { sendRconCommand, sendRconWithRetry } = require('./rcon');
+const { buildSurfSettingsCommand, parseCurrentMap } = require('./workshop');
 const {
     createApiKeyMiddleware,
     createCorsOptions,
@@ -48,6 +49,11 @@ const CONTAINER_MEMORY_MB = readIntegerEnv('CONTAINER_MEMORY_MB', 4096, { min: 1
 const CONTAINER_CPU_LIMIT = readFloatEnv('CONTAINER_CPU_LIMIT', 2, { min: 0.5, max: 8 });
 const CONTAINER_PIDS_LIMIT = readIntegerEnv('CONTAINER_PIDS_LIMIT', 1024, { min: 128, max: 4096 });
 const BOOT_TIMEOUT_MS = readIntegerEnv('BOOT_TIMEOUT_MS', 900000, { min: 60000, max: 1800000 });
+const WORKSHOP_ENFORCEMENT_INTERVAL_MS = readIntegerEnv(
+    'WORKSHOP_ENFORCEMENT_INTERVAL_SECONDS',
+    60,
+    { min: 30, max: 600 }
+) * 1000;
 const RCON_HOST = process.env.RCON_HOST || SERVER_IP;
 const DYNAMIC_CS2_LAN = process.env.DYNAMIC_CS2_LAN === '0' ? '0' : '1';
 const ALLOW_UNLISTED_MAPS = process.env.ALLOW_UNLISTED_MAPS === 'true';
@@ -63,6 +69,8 @@ let db;
 let createQueue = Promise.resolve();
 let httpServer = null;
 let shuttingDown = false;
+let lastWorkshopEnforcementAt = 0;
+const activeBootMonitors = new Set();
 const requireApiKey = createApiKeyMiddleware(SURFLAB_API_KEY);
 const createRateLimit = createFixedWindowRateLimiter({
     max: CREATE_RATE_LIMIT_PER_MINUTE,
@@ -124,6 +132,8 @@ function getContainerEnv(info, name) {
 }
 
 async function monitorServerBoot(container, serverId, port, workshop = null) {
+    if (activeBootMonitors.has(serverId)) return;
+    activeBootMonitors.add(serverId);
     try {
         const logStream = await container.logs({
             follow: true,
@@ -154,6 +164,7 @@ async function monitorServerBoot(container, serverId, port, workshop = null) {
                     [status, reason, serverId]
                 );
             } finally {
+                activeBootMonitors.delete(serverId);
                 logStream.destroy();
             }
         };
@@ -179,20 +190,11 @@ async function monitorServerBoot(container, serverId, port, workshop = null) {
             if (!workshop || workshopFinalizeStarted || settled) return;
             workshopFinalizeStarted = true;
             try {
-                const command = [
-                    `hostname "${workshop.serverName}"`,
-                    'mp_timelimit 0',
-                    'mp_endmatch_votenextmap false',
-                    'mp_match_end_changelevel false',
-                    'sv_allow_votes false',
-                    'bot_quota 0',
-                    'nextlevel ""',
-                ].join('; ');
                 await sendRconWithRetry({
                     host: RCON_HOST,
                     port,
                     password: workshop.rconPassword,
-                    command,
+                    command: buildSurfSettingsCommand(workshop.serverName),
                     timeoutMs: 10_000,
                 });
                 console.log(`[OK] Serveur ${serverId} (port ${port}) sur ${resolvedWorkshopMap}`);
@@ -255,7 +257,14 @@ async function monitorServerBoot(container, serverId, port, workshop = null) {
             }
         }, BOOT_TIMEOUT_MS);
 
+        if (workshop?.requestImmediately) {
+            requestWorkshopMap().catch(err =>
+                console.error(`[WORKSHOP] Recuperation serveur ${serverId}:`, err)
+            );
+        }
+
     } catch (err) {
+        activeBootMonitors.delete(serverId);
         console.error(`Monitoring error serveur ${serverId}:`, err);
     }
 }
@@ -894,6 +903,86 @@ async function reconcileAllServers() {
     }
 }
 
+async function enforceWorkshopServers() {
+    const now = Date.now();
+    if (now - lastWorkshopEnforcementAt < WORKSHOP_ENFORCEMENT_INTERVAL_MS) return;
+    lastWorkshopEnforcementAt = now;
+
+    const servers = await db.all(`
+        SELECT * FROM servers
+         WHERE mapId IS NOT NULL
+           AND port IS NOT NULL
+           AND status IN ('starting', 'running')
+    `);
+
+    for (const server of servers) {
+        if (activeBootMonitors.has(server.id)) continue;
+        try {
+            const resolved = await resolveContainer(server);
+            if (!resolved?.info.State.Running) continue;
+
+            const mapRow = await db.get('SELECT slug FROM maps WHERE id = ?', [server.mapId]);
+            if (!mapRow?.slug) {
+                console.warn(`[WORKSHOP] Serveur ${server.id}: slug inconnu pour ${server.mapId}`);
+                continue;
+            }
+
+            const rconPassword = getContainerEnv(resolved.info, 'CS2_RCONPW');
+            if (!rconPassword) {
+                console.warn(`[WORKSHOP] Serveur ${server.id}: mot de passe RCON introuvable`);
+                continue;
+            }
+
+            const status = await sendRconCommand({
+                host: RCON_HOST,
+                port: server.port,
+                password: rconPassword,
+                command: 'status',
+                timeoutMs: 5_000,
+            });
+            const currentMap = parseCurrentMap(status);
+            if (!currentMap) {
+                console.warn(`[WORKSHOP] Serveur ${server.id}: map courante illisible`);
+                continue;
+            }
+
+            if (currentMap !== mapRow.slug) {
+                console.warn(
+                    `[WORKSHOP] Serveur ${server.id}: derive ${currentMap} -> ${mapRow.slug}, recuperation`
+                );
+                await db.run(
+                    "UPDATE servers SET status = 'starting', failureReason = NULL, updatedAt = datetime('now') WHERE id = ?",
+                    [server.id]
+                );
+                await monitorServerBoot(resolved.container, server.id, server.port, {
+                    mapId: normalizeWorkshopId(server.mapId),
+                    mapSlug: mapRow.slug,
+                    rconPassword,
+                    serverName: server.name,
+                    requestImmediately: true,
+                });
+                continue;
+            }
+
+            await sendRconCommand({
+                host: RCON_HOST,
+                port: server.port,
+                password: rconPassword,
+                command: buildSurfSettingsCommand(server.name),
+                timeoutMs: 5_000,
+            });
+            if (server.status !== 'running') {
+                await db.run(
+                    "UPDATE servers SET status = 'running', failureReason = NULL, updatedAt = datetime('now') WHERE id = ?",
+                    [server.id]
+                );
+            }
+        } catch (err) {
+            console.warn(`[WORKSHOP] Controle serveur ${server.id}:`, err.message);
+        }
+    }
+}
+
 async function expireServers() {
     const expired = await db.all(
         `SELECT * FROM servers
@@ -934,6 +1023,7 @@ async function runMaintenance() {
     try {
         await expireServers();
         await reconcileAllServers();
+        await enforceWorkshopServers();
     } finally {
         maintenanceRunning = false;
     }
