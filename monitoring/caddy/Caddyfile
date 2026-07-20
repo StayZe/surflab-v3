@@ -1,4 +1,8 @@
 :80 {
+  reverse_proxy frontend:3000
+}
+
+:8080 {
 
   # 1) Route /api/* vers le service "api" (conteneur docker) sur le port 8000
   handle /api/* {
@@ -7,7 +11,7 @@
     reverse_proxy api:8000
   }
 
-  # 2) Tout le reste (/) = fichiers statiques du frontend
+  # 2) Tout le reste (/) = fichiers statiques du frontend de monitoring
   handle {
     root * /srv
     file_server

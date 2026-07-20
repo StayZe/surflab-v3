@@ -57,7 +57,8 @@ async function setupDb(filename = './database.sqlite') {
         ['lastPort', 'INTEGER'],
     ];
     for (const [name, type] of migrations) {
-        if (!cols.find(c => c.name === name)) {
+        if (!cols.find(c => c
+            .name === name)) {
             await db.exec(`ALTER TABLE servers ADD COLUMN ${name} ${type}`);
         }
     }
