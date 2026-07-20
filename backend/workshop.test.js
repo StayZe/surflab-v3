@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildSurfSettingsCommand, parseCurrentMap } = require('./workshop');
+const { buildSurfSettingsCommand, parseCurrentMap, parsePlayerCount } = require('./workshop');
 
 test('parseCurrentMap lit la map principale dans la reponse RCON status', () => {
     const response = `
@@ -13,6 +13,24 @@ loaded spawngroup(  2)  : SV:  [2: maps/prefabs/example | main lump]
 
 test('parseCurrentMap refuse une reponse incomplete', () => {
     assert.equal(parseCurrentMap('Server: Running'), null);
+});
+
+test('parsePlayerCount lit le nombre de joueurs humains dans la reponse RCON status', () => {
+    const response = `
+hostname: SurfLab
+map     : de_dust2 at: 0 x, 0 y, 0 z
+players : 3 humans, 0 bots (10 max)
+`;
+    assert.equal(parsePlayerCount(response), 3);
+});
+
+test('parsePlayerCount renvoie 0 quand le serveur est vide', () => {
+    const response = 'players : 0 humans, 0 bots (10 max)';
+    assert.equal(parsePlayerCount(response), 0);
+});
+
+test('parsePlayerCount refuse une reponse incomplete', () => {
+    assert.equal(parsePlayerCount('Server: Running'), null);
 });
 
 test('buildSurfSettingsCommand verrouille la rotation et neutralise les bots', () => {

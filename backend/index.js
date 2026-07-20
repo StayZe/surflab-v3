@@ -7,7 +7,7 @@ const { PassThrough } = require('stream');
 const { setupDb }  = require('./database');
 const { pickAvailablePort, validateCreatePayload } = require('./validation');
 const { sendRconCommand, sendRconWithRetry } = require('./rcon');
-const { buildSurfSettingsCommand, parseCurrentMap } = require('./workshop');
+const { buildSurfSettingsCommand, parseCurrentMap, parsePlayerCount } = require('./workshop');
 const {
     createApiKeyMiddleware,
     createCorsOptions,
@@ -54,6 +54,11 @@ const WORKSHOP_ENFORCEMENT_INTERVAL_MS = readIntegerEnv(
     60,
     { min: 30, max: 600 }
 ) * 1000;
+const INACTIVITY_TIMEOUT_MINUTES = readIntegerEnv(
+    'INACTIVITY_TIMEOUT_MINUTES',
+    10,
+    { min: 1, max: 1440 }
+);
 const RCON_HOST = process.env.RCON_HOST || SERVER_IP;
 const DYNAMIC_CS2_LAN = process.env.DYNAMIC_CS2_LAN === '0' ? '0' : '1';
 const ALLOW_UNLISTED_MAPS = process.env.ALLOW_UNLISTED_MAPS === 'true';
@@ -71,6 +76,10 @@ let httpServer = null;
 let shuttingDown = false;
 let lastWorkshopEnforcementAt = 0;
 const activeBootMonitors = new Set();
+// serverId -> { count, updatedAt } — rafraichi par enforceWorkshopServers()
+// a chaque interrogation RCON du serveur, pas de colonne DB pour une donnee
+// aussi volatile.
+const playerCountCache = new Map();
 const requireApiKey = createApiKeyMiddleware(SURFLAB_API_KEY);
 const createRateLimit = createFixedWindowRateLimiter({
     max: CREATE_RATE_LIMIT_PER_MINUTE,
@@ -101,6 +110,9 @@ function formatServer(server) {
             mapId:      server.mapId || 'de_inferno',
             isWorkshop: !!server.mapId,
             maxPlayers: server.maxPlayers || 10,
+            currentPlayers: server.status === 'running'
+                ? (playerCountCache.get(server.id)?.count ?? null)
+                : null,
         },
         system: {
             containerId: server.containerId,
@@ -553,6 +565,7 @@ async function syncServerStatus(server) {
         // supprime la ligne pour ne plus jamais la montrer au front.
         if (server.status === 'missing') {
             await db.run('DELETE FROM servers WHERE id = ?', [server.id]);
+            playerCountCache.delete(server.id);
             console.log(`[MONITOR] Serveur ${server.id} supprime (conteneur absent de facon persistante).`);
             return { id: String(server.id), status: 'deleted' };
         }
@@ -678,7 +691,7 @@ app.post('/api/servers/:id/restart', async (req, res) => {
         }
 
         await db.run(
-            "UPDATE servers SET status = ?, containerId = ?, stoppedAt = NULL, failureReason = NULL, updatedAt = datetime('now') WHERE id = ?",
+            "UPDATE servers SET status = ?, containerId = ?, stoppedAt = NULL, failureReason = NULL, emptySince = NULL, updatedAt = datetime('now') WHERE id = ?",
             ['starting', resolved.info.Id, server.id]
         );
 
@@ -716,6 +729,7 @@ app.delete('/api/servers/delete/:id', async (req, res) => {
         }
 
         await db.run('DELETE FROM servers WHERE id = ?', [req.params.id]);
+        playerCountCache.delete(server.id);
         res.json({ success: true, message: `Serveur ID ${req.params.id} supprimé.` });
 
     } catch (err) {
@@ -765,8 +779,7 @@ app.get('/api/stats/leaderboard', async (req, res) => {
         const rows = await sdb.all(
             `SELECT SteamID, PlayerName, GlobalPoints, TimesConnected, LastConnected
                FROM PlayerStats
-              WHERE GlobalPoints > 0
-              ORDER BY GlobalPoints DESC
+              ORDER BY GlobalPoints DESC, TimesConnected DESC, PlayerName ASC
               LIMIT ?`, [limit]);
         res.json({
             success: true, available: true, total: rows.length,
@@ -928,6 +941,21 @@ async function reconcileAllServers() {
     }
 }
 
+// Supprime un serveur reste vide (0 joueur) plus de INACTIVITY_TIMEOUT_MINUTES.
+// Les stats (PlayerRecords) sont indexees par map, pas par serveur : la
+// suppression n'affecte donc aucun classement/record existant.
+async function pruneInactiveServer(server) {
+    try {
+        const resolved = await resolveContainer(server);
+        if (resolved) await resolved.container.remove({ force: true });
+        await db.run('DELETE FROM servers WHERE id = ?', [server.id]);
+        playerCountCache.delete(server.id);
+        console.log(`[INACTIVITY] Serveur ${server.id} supprime (0 joueur depuis plus de ${INACTIVITY_TIMEOUT_MINUTES} min).`);
+    } catch (err) {
+        console.warn(`[INACTIVITY] Suppression serveur ${server.id}:`, err.message);
+    }
+}
+
 async function enforceWorkshopServers() {
     const now = Date.now();
     if (now - lastWorkshopEnforcementAt < WORKSHOP_ENFORCEMENT_INTERVAL_MS) return;
@@ -965,6 +993,30 @@ async function enforceWorkshopServers() {
                 command: 'status',
                 timeoutMs: 5_000,
             });
+            const playerCount = parsePlayerCount(status);
+            if (playerCount !== null) {
+                playerCountCache.set(server.id, { count: playerCount, updatedAt: Date.now() });
+
+                if (playerCount > 0) {
+                    if (server.emptySince) {
+                        await db.run('UPDATE servers SET emptySince = NULL WHERE id = ?', [server.id]);
+                    }
+                } else {
+                    if (!server.emptySince) {
+                        server.emptySince = new Date().toISOString();
+                        await db.run(
+                            'UPDATE servers SET emptySince = ? WHERE id = ?',
+                            [server.emptySince, server.id]
+                        );
+                    }
+                    const emptyMinutes = (Date.now() - Date.parse(server.emptySince)) / 60_000;
+                    if (emptyMinutes >= INACTIVITY_TIMEOUT_MINUTES) {
+                        await pruneInactiveServer(server);
+                        continue;
+                    }
+                }
+            }
+
             const currentMap = parseCurrentMap(status);
             if (!currentMap) {
                 console.warn(`[WORKSHOP] Serveur ${server.id}: map courante illisible`);
@@ -1030,6 +1082,7 @@ async function expireServers() {
                   WHERE id = ?`,
                 [server.id]
             );
+            playerCountCache.delete(server.id);
             console.log(`[EXPIRE] Serveur ${server.id} supprime apres expiration.`);
         } catch (err) {
             await db.run(

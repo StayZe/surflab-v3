@@ -28,4 +28,9 @@ function parseCurrentMap(statusResponse) {
     return match ? match[1].trim() : null;
 }
 
-module.exports = { buildSurfSettingsCommand, parseCurrentMap };
+function parsePlayerCount(statusResponse) {
+    const match = String(statusResponse || '').match(/players\s*:\s*(\d+)\s+humans?/i);
+    return match ? Number(match[1]) : null;
+}
+
+module.exports = { buildSurfSettingsCommand, parseCurrentMap, parsePlayerCount };
