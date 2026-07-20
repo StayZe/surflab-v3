@@ -471,7 +471,9 @@ app.get('/api/servers', async (req, res) => {
         const page  = Math.max(1, parseInt(req.query.page)  || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT));
 
-        const rows   = await db.all('SELECT * FROM servers ORDER BY createdAt DESC');
+        // "expired" est conserve en base pour l'historique (voir API.md) mais
+        // n'a pas de sens dans la liste publique des serveurs a rejoindre.
+        const rows   = await db.all("SELECT * FROM servers WHERE status != 'expired' ORDER BY createdAt DESC");
         const paged  = paginate(rows, page, limit);
 
         res.json({
@@ -537,14 +539,37 @@ async function resolveContainer(server) {
 }
 
 async function syncServerStatus(server) {
-    const resolved = await resolveContainer(server);
+    const isSimulated = String(server.containerId || '').startsWith('simulated');
+    const resolved = isSimulated ? null : await resolveContainer(server);
+
+    if (!resolved && !isSimulated) {
+        // Statut "expired" : conserve volontairement en base pour l'historique
+        // (voir API.md), on ne le touche pas.
+        if (server.status === 'expired') {
+            return { id: String(server.id), status: 'expired' };
+        }
+        // Deja constate "missing" au cycle precedent : le conteneur reste
+        // introuvable, ce n'est pas un hoquet transitoire de Docker. On
+        // supprime la ligne pour ne plus jamais la montrer au front.
+        if (server.status === 'missing') {
+            await db.run('DELETE FROM servers WHERE id = ?', [server.id]);
+            console.log(`[MONITOR] Serveur ${server.id} supprime (conteneur absent de facon persistante).`);
+            return { id: String(server.id), status: 'deleted' };
+        }
+        // Premiere detection : on laisse une chance (jusqu'au prochain cycle
+        // de reconciliation) avant de supprimer, pour absorber un faux positif.
+        await db.run(
+            "UPDATE servers SET status = 'missing', updatedAt = datetime('now') WHERE id = ?",
+            [server.id]
+        );
+        return { id: String(server.id), status: 'missing' };
+    }
+
     let status = server.status;
     let containerId = server.containerId;
     let failureReason = server.failureReason;
 
-    if (!resolved) {
-        if (status !== 'expired') status = 'missing';
-    } else {
+    if (resolved) {
         containerId = resolved.info.Id;
         if (server.status === 'expired') {
             status = 'expired';
