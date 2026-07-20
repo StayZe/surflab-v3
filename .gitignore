@@ -38,3 +38,6 @@ __pycache__/
 *.pyc
 *.bak-*
 backups/
+
+# Frontend SurfLab : depot git imbrique, historique separe (ne pas suivre ici)
+frontend/

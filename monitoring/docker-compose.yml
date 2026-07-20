@@ -11,11 +11,32 @@ services:
     ports:
       - "127.0.0.1:80:80"
       - "10.255.0.26:80:80"
+      - "127.0.0.1:8080:8080"
+      - "10.255.0.26:8080:8080"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./frontend:/srv:ro
     depends_on:
       - api
+      - frontend
+    networks:
+      - surflab_web
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ../frontend
+    restart: unless-stopped
+    init: true
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - ../frontend/.env
     networks:
       - surflab_web
     logging:
