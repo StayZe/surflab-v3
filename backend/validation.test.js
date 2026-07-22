@@ -9,7 +9,7 @@ test('parseInteger accepte un entier ou une chaine numerique', () => {
     assert.equal(parseInteger('abc'), null);
 });
 
-test('le payload historique reste compatible sans duree explicite', () => {
+test('le payload minimal reste compatible et autoDelete vaut true par defaut', () => {
     const result = validateCreatePayload({
         serverName: 'SurfLab Test',
         maxPlayers: 12,
@@ -21,8 +21,23 @@ test('le payload historique reste compatible sans duree explicite', () => {
         maxPlayers: 12,
         mapId: '3133346713',
         ownerId: 'user-42',
-        durationMinutes: 60,
+        autoDelete: true,
     });
+});
+
+test('autoDelete accepte un booleen explicite', () => {
+    const result = validateCreatePayload({
+        serverName: 'SurfLab Test',
+        maxPlayers: 12,
+        mapId: '3133346713',
+        ownerId: 'user-42',
+        autoDelete: false,
+    });
+    assert.equal(result.value.autoDelete, false);
+    assert.match(
+        validateCreatePayload({ serverName: 'SurfLab', maxPlayers: 10, autoDelete: 'peut-etre' }).error,
+        /autoDelete/
+    );
 });
 
 test('les valeurs dangereuses ou hors limites sont refusees', () => {
@@ -30,7 +45,6 @@ test('les valeurs dangereuses ou hors limites sont refusees', () => {
     assert.match(validateCreatePayload({ serverName: 'Surf; quit', maxPlayers: 10 }).error, /serverName/);
     assert.match(validateCreatePayload({ serverName: 'SurfLab', maxPlayers: 0 }).error, /maxPlayers/);
     assert.match(validateCreatePayload({ serverName: 'SurfLab', maxPlayers: 10, mapId: '+quit' }).error, /mapId/);
-    assert.match(validateCreatePayload({ serverName: 'SurfLab', maxPlayers: 10, durationMinutes: 600 }).error, /durationMinutes/);
 });
 
 test('la creation SaaS exige une map et un proprietaire', () => {

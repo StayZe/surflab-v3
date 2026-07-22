@@ -69,6 +69,7 @@ async function setupDb(filename = './database.sqlite') {
         ['failureReason', 'TEXT'],
         ['lastPort', 'INTEGER'],
         ['emptySince', 'DATETIME'],
+        ['autoDelete', 'INTEGER'],
     ];
     for (const [name, type] of migrations) {
         if (!cols.find(c => c

@@ -24,7 +24,7 @@ sont limitees par `CORS_ORIGINS`. Toutes les reponses contiennent
   "maxPlayers": 12,
   "mapId": "3133346713",
   "ownerId": "user-42",
-  "durationMinutes": 60
+  "autoDelete": true
 }
 ```
 
@@ -32,13 +32,24 @@ sont limitees par `CORS_ORIGINS`. Toutes les reponses contiennent
 - `maxPlayers` : entier de 1 a 16 par defaut ;
 - `mapId` : ID Workshop numerique obligatoire et present dans le catalogue ;
 - `ownerId` : identifiant du user obligatoire ;
-- `durationMinutes` : 15 a 480 minutes, optionnel, 60 par defaut.
+- `autoDelete` : booleen optionnel, `true` par defaut.
 
-L'absence de `durationMinutes` reste compatible avec l'ancien frontend. A
-l'expiration, le conteneur est supprime et le port est libere. La ligne reste
-dans l'historique avec le statut `expired` et `connection.released: true`.
-Les anciens serveurs deja en base, sans date d'expiration, ne sont pas modifies
-automatiquement.
+Il n'y a pas de duree de vie fixe : un serveur ne s'arrete jamais tout seul
+apres un delai. Seuls deux mecanismes peuvent y mettre fin :
+
+1. **Inactivite** : si `autoDelete` est `true` (par defaut) et que le serveur
+   reste a 0 joueur pendant plus de `INACTIVITY_TIMEOUT_MINUTES` (10 minutes
+   par defaut), il est automatiquement arrete, son conteneur supprime, et la
+   ligne retiree de la base (pas de statut `expired` conserve dans ce cas).
+2. **Suppression manuelle** : `DELETE /servers/delete/:id`.
+
+Passer `"autoDelete": false` a la creation desactive completement le point 1 :
+le serveur tourne indefiniment tant que personne ne le supprime explicitement,
+meme s'il reste vide.
+
+Les serveurs crees avant l'introduction de ce flag n'ont pas de valeur
+`autoDelete` en base ; ils sont traites comme `true` (comportement historique
+inchange).
 
 Les limites de production par defaut sont de 8 serveurs actifs au total et 2
 par utilisateur. Chaque nouveau conteneur est limite a 4 Gio de memoire, 2 CPU,
@@ -54,8 +65,7 @@ Reponse :
   "containerId": "...",
   "status": "starting",
   "joinUrl": "steam://connect/10.255.0.26:27030",
-  "durationMinutes": 60,
-  "expiresAt": "2026-07-15T18:00:00.000Z"
+  "autoDelete": true
 }
 ```
 

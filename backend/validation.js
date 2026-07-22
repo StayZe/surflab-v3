@@ -7,9 +7,6 @@ function parseInteger(value) {
 }
 
 function validateCreatePayload(payload, options = {}) {
-    const minDuration = options.minDuration ?? 15;
-    const maxDuration = options.maxDuration ?? 480;
-    const defaultDuration = options.defaultDuration ?? 60;
     const requireMapId = options.requireMapId ?? false;
     const requireOwnerId = options.requireOwnerId ?? false;
     const maxPlayersLimit = options.maxPlayers ?? 64;
@@ -48,13 +45,18 @@ function validateCreatePayload(payload, options = {}) {
         return { error: 'ownerId est obligatoire.' };
     }
 
-    const rawDuration = payload.durationMinutes ?? defaultDuration;
-    const durationMinutes = parseInteger(rawDuration);
-    if (durationMinutes === null || durationMinutes < minDuration || durationMinutes > maxDuration) {
-        return { error: `durationMinutes doit etre compris entre ${minDuration} et ${maxDuration}.` };
+    let autoDelete = true;
+    if (payload.autoDelete !== undefined && payload.autoDelete !== null) {
+        if (typeof payload.autoDelete === 'boolean') {
+            autoDelete = payload.autoDelete;
+        } else if (payload.autoDelete === 'true' || payload.autoDelete === 'false') {
+            autoDelete = payload.autoDelete === 'true';
+        } else {
+            return { error: 'autoDelete doit etre un booleen.' };
+        }
     }
 
-    return { value: { serverName, maxPlayers, mapId, ownerId, durationMinutes } };
+    return { value: { serverName, maxPlayers, mapId, ownerId, autoDelete } };
 }
 
 function pickAvailablePort(usedPorts, basePort, rangeSize) {

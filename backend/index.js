@@ -38,9 +38,6 @@ const BASE_PORT = readIntegerEnv('BASE_PORT', 27026, { min: 1024, max: 65535 });
 const PORT_RANGE_SIZE = readIntegerEnv('PORT_RANGE_SIZE', 100, { min: 1, max: 1000 });
 const CS2_IMAGE = process.env.CS2_IMAGE || 'joedwards32/cs2';
 const CS2_DATA_PATH = process.env.CS2_DATA_PATH || '/home/steam/cs2_data';
-const DEFAULT_DURATION_MINUTES = readIntegerEnv('DEFAULT_SERVER_DURATION_MINUTES', 60, { min: 15, max: 480 });
-const MIN_DURATION_MINUTES = readIntegerEnv('MIN_SERVER_DURATION_MINUTES', 15, { min: 5, max: 480 });
-const MAX_DURATION_MINUTES = readIntegerEnv('MAX_SERVER_DURATION_MINUTES', 480, { min: 15, max: 1440 });
 const MAX_ACTIVE_SERVERS = readIntegerEnv('MAX_ACTIVE_SERVERS', 8, { min: 1, max: 64 });
 const MAX_ACTIVE_PER_OWNER = readIntegerEnv('MAX_ACTIVE_PER_OWNER', 2, { min: 1, max: 8 });
 const MAX_PLAYERS_PER_SERVER = readIntegerEnv('MAX_PLAYERS_PER_SERVER', 16, { min: 1, max: 64 });
@@ -119,9 +116,8 @@ function formatServer(server) {
             containerId: server.containerId,
             createdAt:   server.createdAt,
             updatedAt:   server.updatedAt,
-            durationMinutes: server.durationMinutes ?? null,
-            expiresAt:   server.expiresAt ?? null,
             stoppedAt:   server.stoppedAt ?? null,
+            autoDelete:  server.autoDelete !== 0,
             failureReason: server.failureReason ?? null,
         },
     };
@@ -413,15 +409,14 @@ async function createGameServer(payload) {
         },
     });
 
-    const expiresAt = new Date(Date.now() + payload.durationMinutes * 60_000).toISOString();
     let serverId = null;
     try {
         const result = await db.run(
             `INSERT INTO servers
-                (name, maxPlayers, mapId, port, containerId, status, ownerId, durationMinutes, expiresAt)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                (name, maxPlayers, mapId, port, containerId, status, ownerId, autoDelete)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [payload.serverName, payload.maxPlayers, payload.mapId, nextPort, container.id,
-                'starting', payload.ownerId, payload.durationMinutes, expiresAt]
+                'starting', payload.ownerId, payload.autoDelete ? 1 : 0]
         );
         serverId = result.lastID;
         await container.start();
@@ -449,8 +444,7 @@ async function createGameServer(payload) {
         containerId: container.id,
         status: 'starting',
         joinUrl: `steam://connect/${SERVER_IP}:${nextPort}`,
-        durationMinutes: payload.durationMinutes,
-        expiresAt,
+        autoDelete: payload.autoDelete,
     };
 }
 
@@ -458,9 +452,6 @@ async function createGameServer(payload) {
 
 app.post('/api/servers/create', createRateLimit, async (req, res) => {
     const validated = validateCreatePayload(req.body || {}, {
-        defaultDuration: DEFAULT_DURATION_MINUTES,
-        minDuration: MIN_DURATION_MINUTES,
-        maxDuration: MAX_DURATION_MINUTES,
         maxPlayers: MAX_PLAYERS_PER_SERVER,
         requireMapId: true,
         requireOwnerId: true,
@@ -677,7 +668,7 @@ app.post('/api/servers/:id/restart', async (req, res) => {
         if (!server) return res.status(404).json({ success: false, message: "Serveur introuvable." });
         assertOwnerAccess(server, req.body?.ownerId);
 
-        if (server.status === 'expired' || (server.expiresAt && Date.parse(server.expiresAt) <= Date.now())) {
+        if (server.status === 'expired') {
             return res.status(409).json({ success: false, message: 'Ce serveur a expire et ne peut plus etre redemarre.' });
         }
 
@@ -1052,6 +1043,8 @@ async function enforceWorkshopServers() {
                     if (server.emptySince) {
                         await db.run('UPDATE servers SET emptySince = NULL WHERE id = ?', [server.id]);
                     }
+                } else if (server.autoDelete === 0) {
+                    // Auto-suppression pour inactivite desactivee pour ce serveur.
                 } else {
                     if (!server.emptySince) {
                         server.emptySince = new Date().toISOString();
@@ -1111,46 +1104,11 @@ async function enforceWorkshopServers() {
     }
 }
 
-async function expireServers() {
-    const expired = await db.all(
-        `SELECT * FROM servers
-          WHERE expiresAt IS NOT NULL
-            AND datetime(expiresAt) <= datetime('now')
-            AND status IN ('starting', 'running', 'stopped', 'missing', 'timeout', 'error', 'error_steam_auth')`
-    );
-    for (const server of expired) {
-        try {
-            const resolved = await resolveContainer(server);
-            if (resolved?.info.State.Running) {
-                await resolved.container.stop({ t: 30 });
-            }
-            if (resolved) await resolved.container.remove({ force: true });
-            await db.run(
-                `UPDATE servers
-                    SET status = 'expired', stoppedAt = datetime('now'),
-                        lastPort = port, port = NULL,
-                        failureReason = NULL, updatedAt = datetime('now')
-                  WHERE id = ?`,
-                [server.id]
-            );
-            playerCountCache.delete(server.id);
-            console.log(`[EXPIRE] Serveur ${server.id} supprime apres expiration.`);
-        } catch (err) {
-            await db.run(
-                "UPDATE servers SET failureReason = ?, updatedAt = datetime('now') WHERE id = ?",
-                [`Expiration cleanup: ${err.message}`, server.id]
-            );
-            console.warn(`[EXPIRE] Serveur ${server.id}:`, err.message);
-        }
-    }
-}
-
 let maintenanceRunning = false;
 async function runMaintenance() {
     if (maintenanceRunning) return;
     maintenanceRunning = true;
     try {
-        await expireServers();
         await reconcileAllServers();
         await enforceWorkshopServers();
     } finally {
