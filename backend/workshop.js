@@ -18,6 +18,7 @@ function buildSurfSettingsCommand(serverName) {
         'sv_allow_votes 0',
         'bot_quota 0',
         'nextlevel ""',
+	'sv_airaccelerate 500',
     ].join('; ');
 }
 

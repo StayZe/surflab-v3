@@ -362,7 +362,7 @@ async function createGameServer(payload) {
     // La prise en charge Workshop native de l'image est experimentale et peut
     // rester sur <empty>. On demarre donc sur une map locale, puis le moniteur
     // demande la map Workshop par RCON une fois Steam reellement active.
-    let args = `+hostname "${payload.serverName}" +sv_airaccelerate 150 +sv_cheats 0 -authkey ${process.env.STEAM_WEBAPI_KEY}`;
+    let args = `+hostname "${payload.serverName}" +sv_airaccelerate 500 +sv_cheats 0 -authkey ${process.env.STEAM_WEBAPI_KEY}`;
     const rconPassword = crypto.randomBytes(24).toString('base64url');
 
     const envVars = [

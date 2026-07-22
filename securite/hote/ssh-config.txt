@@ -1,4 +1,0 @@
-KbdInteractiveAuthentication no
-X11Forwarding yes
---- /etc/ssh/sshd_config.d/50-cloud-init.conf ---
-(non lisible)
