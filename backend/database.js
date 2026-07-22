@@ -15,6 +15,7 @@ const DEFAULT_MAPS = [
     { id: '3746469340', name: 'Quest',  slug: 'surf_quest', difficulty: 'T3'  },
     { id: '3624850101', name: 'Interceptor',  slug: 'surf_interceptor', difficulty: 'T3'  },
     { id: '3655929954', name: 'HappyHands2',  slug: 'surf_happyhands2', difficulty: 'T3'  },
+    { id: '3133346713', name: 'SurfBoreas',  slug: 'surf_boreas', difficulty: 'T2'  },
 
 ];
 
