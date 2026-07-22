@@ -5,9 +5,17 @@ const DEFAULT_MAPS = [
     { id: '3133346713', name: 'Boreas',  slug: 'surf_boreas', difficulty: 'T1'  },
     { id: '3076153623', name: 'Kitsune',   slug: 'surf_kitsune', difficulty: 'T2'   },
     { id: '3073875025', name: 'Utopia NJV',  slug: 'surf_utopia_njv', difficulty: 'T1'  },
-    { id: '3605899620', name: 'Who Knows 2',   slug: 'surf_whoknows2', difficulty: 'T1'   },
-    { id: '3581092479', name: 'Frosty',  slug: 'surf_frosty', difficulty: 'T2'  },
-    { id: '3617159277', name: 'Inside-Out',   slug: 'surf_insideout', difficulty: 'T3'   },
+    { id: '3082548297', name: 'Rookie',  slug: 'surf_rookie', difficulty: 'T1'  },
+    { id: '3767399691', name: 'Sulfur',  slug: 'surf_sulfur', difficulty: 'T2'  },
+    { id: '3165517928', name: 'Astra',  slug: 'surf_astra', difficulty: 'T2'  },
+    { id: '3129698096', name: 'Nyx',  slug: 'surf_nyx', difficulty: 'T1'  },
+    { id: '3231028283', name: '1win',  slug: 'surf_1win', difficulty: 'T1'  },
+    { id: '3088413071', name: 'Ace',  slug: 'surf_ace', difficulty: 'T2'  },
+    { id: '3624041364', name: 'Invert',  slug: 'surf_invert', difficulty: 'T2'  },
+    { id: '3746469340', name: 'Quest',  slug: 'surf_quest', difficulty: 'T3'  },
+    { id: '3624850101', name: 'Interceptor',  slug: 'surf_interceptor', difficulty: 'T3'  },
+    { id: '3655929954', name: 'HappyHands2',  slug: 'surf_happyhands2', difficulty: 'T3'  },
+
 ];
 
 async function setupDb(filename = './database.sqlite') {
@@ -37,9 +45,15 @@ async function setupDb(filename = './database.sqlite') {
             id    INTEGER PRIMARY KEY NOT NULL,
             name  TEXT NOT NULL,
             slug  TEXT NOT NULL UNIQUE,
-            difficulty TEXT NOT NULL
+            difficulty TEXT NOT NULL,
+            imageUrl TEXT
         )
     `);
+
+    const mapCols = await db.all("PRAGMA table_info(maps)");
+    if (!mapCols.find(c => c.name === 'imageUrl')) {
+        await db.exec('ALTER TABLE maps ADD COLUMN imageUrl TEXT');
+    }
 
     // Profils Steam des visiteurs du site (distinct des stats SharpTimer,
     // qui vivent dans leur propre base gérée par le plugin de jeu).

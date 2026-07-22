@@ -8,6 +8,7 @@ const { setupDb }  = require('./database');
 const { pickAvailablePort, validateCreatePayload } = require('./validation');
 const { sendRconCommand, sendRconWithRetry } = require('./rcon');
 const { buildSurfSettingsCommand, parseCurrentMap, parsePlayerCount } = require('./workshop');
+const { fetchWorkshopPreviewUrl } = require('./steamApi');
 const {
     createApiKeyMiddleware,
     createCorsOptions,
@@ -1148,9 +1149,25 @@ app.use((err, req, res, next) => {
     res.status(500).json({ success: false, error: 'Erreur interne.' });
 });
 
+// Recupere une fois la miniature Workshop des maps qui n'en ont pas encore
+// (nouvelle ligne inseree par DEFAULT_MAPS). Ne bloque pas durablement le
+// demarrage : chaque appel Steam a son propre timeout et echoue en silence.
+async function backfillMapImages() {
+    const missing = await db.all("SELECT id FROM maps WHERE imageUrl IS NULL OR imageUrl = ''");
+    if (missing.length === 0) return;
+    await Promise.all(missing.map(async (row) => {
+        const previewUrl = await fetchWorkshopPreviewUrl(row.id);
+        if (previewUrl) {
+            await db.run('UPDATE maps SET imageUrl = ? WHERE id = ?', [previewUrl, row.id]);
+        }
+    }));
+    console.log(`[MAPS] Miniatures recuperees pour ${missing.length} map(s).`);
+}
+
 async function start() {
     db = await setupDb();
     console.log('Base de donnees SQLite prete.');
+    await backfillMapImages();
     await runMaintenance();
     setInterval(runMaintenance, 30000).unref();
     httpServer = app.listen(PORT, BIND_ADDRESS, () =>

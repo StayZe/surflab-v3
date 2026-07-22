@@ -1,0 +1,7 @@
+Résumé Trivy — mer. 22 juil. 2026 10:55:31 UTC
+=================================
+surflab-v3-backend:latest      HIGH=884 CRITICAL=76
+monitoring-api:latest          HIGH=41 CRITICAL=4
+monitoring-frontend:latest     HIGH=22 CRITICAL=6
+caddy:2                        HIGH=63 CRITICAL=6
+joedwards32/cs2:latest         HIGH=555 CRITICAL=24
