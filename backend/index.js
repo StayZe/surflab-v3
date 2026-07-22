@@ -91,6 +91,7 @@ app.use(securityHeaders);
 app.use(cors(createCorsOptions(process.env.CORS_ORIGINS || '')));
 app.use(express.json({ limit: '16kb' }));
 app.use('/api/servers', requireApiKey);
+app.use('/api/users', requireApiKey);
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -743,6 +744,56 @@ app.get('/api/maps', async (req, res) => {
     try {
         const maps = await db.all('SELECT * FROM maps ORDER BY difficulty ASC, name ASC');
         res.json({ success: true, total: maps.length, data: maps });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── USERS (profils Steam des visiteurs, upsertés au login) ──────────────────
+
+app.post('/api/users', async (req, res) => {
+    const { steamId, steamName, avatar, profileUrl } = req.body || {};
+    if (!steamId) {
+        return res.status(400).json({ success: false, error: 'steamId est obligatoire.' });
+    }
+    try {
+        await db.run(
+            `INSERT INTO users (steamId, steamName, avatar, profileUrl, updatedAt)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(steamId) DO UPDATE SET
+                steamName  = excluded.steamName,
+                avatar     = excluded.avatar,
+                profileUrl = excluded.profileUrl,
+                updatedAt  = CURRENT_TIMESTAMP`,
+            [steamId, steamName || null, avatar || null, profileUrl || null]
+        );
+        const user = await db.get('SELECT * FROM users WHERE steamId = ?', [steamId]);
+        res.json({ success: true, data: user });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Recuperation en masse : /api/users?ids=steamId1,steamId2,...
+app.get('/api/users', async (req, res) => {
+    const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!ids.length) {
+        return res.status(400).json({ success: false, error: 'ids est obligatoire.' });
+    }
+    try {
+        const placeholders = ids.map(() => '?').join(',');
+        const users = await db.all(`SELECT * FROM users WHERE steamId IN (${placeholders})`, ids);
+        res.json({ success: true, total: users.length, data: users });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/users/:steamId', async (req, res) => {
+    try {
+        const user = await db.get('SELECT * FROM users WHERE steamId = ?', [req.params.steamId]);
+        if (!user) return res.status(404).json({ success: false, error: 'Utilisateur inconnu.' });
+        res.json({ success: true, data: user });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

@@ -37,7 +37,20 @@ async function setupDb(filename = './database.sqlite') {
             id    INTEGER PRIMARY KEY NOT NULL,
             name  TEXT NOT NULL,
             slug  TEXT NOT NULL UNIQUE,
-            difficulty TEXT NOT NULL 
+            difficulty TEXT NOT NULL
+        )
+    `);
+
+    // Profils Steam des visiteurs du site (distinct des stats SharpTimer,
+    // qui vivent dans leur propre base gérée par le plugin de jeu).
+    await db.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+            steamId    TEXT PRIMARY KEY,
+            steamName  TEXT,
+            avatar     TEXT,
+            profileUrl TEXT,
+            createdAt  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt  DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     `);
 
