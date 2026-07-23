@@ -1,0 +1,9 @@
+{
+  "folders": [
+    { "name": "surflab-v3 (backend)", "path": "." },
+    { "name": "frontend (SurfLab)", "path": "frontend" }
+  ],
+  "settings": {
+    "git.scanRepositories": ["frontend"]
+  }
+}

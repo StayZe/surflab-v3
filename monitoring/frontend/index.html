@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0f1e">
+<meta name="color-scheme" content="dark">
+<title>SurfLab — Monitoring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0f1e;
+    --txt:#e7edf7;
+    --muted:#8d9ab0;
+    --faint:#5c6a82;
+    --border:rgba(255,255,255,.09);
+    --border-hi:rgba(255,255,255,.16);
+    --teal:#2dd4bf;
+    --cyan:#38bdf8;
+    --orange:#fb923c;
+    --rose:#f43f5e;
+    --red:#f87171;
+    --green:#34d399;
+    --gold:#fbbf24;
+    --font-body:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --font-head:'Manrope','Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scrollbar-color:rgba(255,255,255,.18) transparent}
+  body{
+    min-height:100vh;
+    background:var(--bg);
+    background-image:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(56,89,146,.18),transparent);
+    color:var(--txt);
+    font-family:var(--font-body);
+    font-size:14px;
+    line-height:1.5;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* ---- blobs de fond ---- */
+  .blob{position:fixed;border-radius:50%;filter:blur(60px);z-index:-1;pointer-events:none}
+  .b1{width:580px;height:580px;top:-190px;left:-140px;opacity:.34;
+      background:radial-gradient(circle at 35% 35%,#ff9a3d 0%,#f43f5e 65%,transparent 100%);
+      animation:drift1 28s ease-in-out infinite alternate}
+  .b2{width:660px;height:660px;bottom:-240px;right:-180px;opacity:.30;
+      background:radial-gradient(circle at 55% 45%,#14b8a6 0%,#0ea5e9 70%,transparent 100%);
+      animation:drift2 34s ease-in-out infinite alternate}
+  .b3{width:440px;height:440px;top:40%;left:55%;opacity:.16;
+      background:radial-gradient(circle,#6366f1 0%,transparent 70%);
+      animation:drift3 40s ease-in-out infinite alternate}
+  body.blobs-paused .blob{animation-play-state:paused}
+  @keyframes drift1{from{transform:translate(0,0) scale(1)}to{transform:translate(70px,50px) scale(1.12)}}
+  @keyframes drift2{from{transform:translate(0,0) scale(1.05)}to{transform:translate(-80px,-60px) scale(.95)}}
+  @keyframes drift3{from{transform:translate(0,0)}to{transform:translate(-60px,70px)}}
+
+  /* ---- verre ---- */
+  .glass{
+    background:linear-gradient(160deg,rgba(255,255,255,.07),rgba(255,255,255,.028));
+    backdrop-filter:blur(14px) saturate(140%);
+    -webkit-backdrop-filter:blur(14px) saturate(140%);
+    border:1px solid var(--border);
+    border-radius:22px;
+    box-shadow:0 18px 46px rgba(2,6,17,.42);
+  }
+  .glass-sub{
+    background:rgba(255,255,255,.04);
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    border:1px solid var(--border);
+    border-radius:16px;
+    transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease;
+  }
+  .glass-sub:hover{transform:translateY(-3px);border-color:var(--border-hi);box-shadow:0 14px 34px rgba(2,6,17,.4)}
+
+  /* ---- animations d'apparition ---- */
+  .reveal{animation:rise .7s cubic-bezier(.22,1,.36,1) both;animation-delay:var(--d,0s)}
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  }
+
+  main{max-width:1440px;margin:0 auto;padding:22px clamp(14px,3vw,38px) 56px;display:flex;flex-direction:column;gap:24px}
+
+  /* ---- bandeau connexion ---- */
+  .net-banner{
+    position:fixed;top:14px;left:50%;transform:translate(-50%,-72px);
+    z-index:60;display:flex;align-items:center;gap:9px;
+    padding:9px 18px;border-radius:999px;font-size:12.5px;font-weight:600;
+    color:#fecaca;background:rgba(60,14,22,.82);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border:1px solid rgba(248,113,113,.35);box-shadow:0 10px 30px rgba(0,0,0,.45);
+    transition:transform .45s cubic-bezier(.22,1,.36,1),opacity .3s;opacity:0;pointer-events:none;
+  }
+  .net-banner.show{transform:translate(-50%,0);opacity:1}
+  .net-banner .warn-dot{width:8px;height:8px;border-radius:50%;background:var(--red);animation:pulse 1.4s ease-in-out infinite}
+
+  /* ---- header ---- */
+  .topbar{padding:clamp(18px,2.6vw,28px);display:flex;flex-wrap:wrap;align-items:center;gap:20px;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:15px;min-width:0}
+  .logo{
+    width:52px;height:52px;flex:none;border-radius:15px;display:grid;place-items:center;
+    background:linear-gradient(140deg,#fb923c 0%,#f43f5e 55%,#8b5cf6 120%);
+    box-shadow:0 8px 24px rgba(244,63,94,.35),inset 0 1px 0 rgba(255,255,255,.35);
+  }
+  .brand h1{
+    font-family:var(--font-head);font-size:clamp(22px,3.4vw,29px);font-weight:800;letter-spacing:-.5px;line-height:1.15;
+    background:linear-gradient(92deg,#ffffff 20%,#fdba74 55%,#5eead4 95%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .tagline{font-size:12px;color:var(--muted);letter-spacing:.2px}
+  .live{
+    display:inline-flex;align-items:center;gap:7px;margin-left:6px;padding:5px 13px;border-radius:999px;
+    font-size:11px;font-weight:700;letter-spacing:1.4px;color:var(--green);
+    background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);
+  }
+  .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(52,211,153,.55);animation:pulse 1.8s ease-out infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)}70%{box-shadow:0 0 0 9px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+  .live.down{color:var(--red);background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.35)}
+  .live.down .live-dot{background:var(--red);animation:none}
+
+  .hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;flex:1;min-width:min(100%,540px)}
+  .stat-tile{padding:13px 16px;border-radius:15px;background:rgba(255,255,255,.04);border:1px solid var(--border)}
+  .stat-tile .lbl{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:1.1px;color:var(--faint)}
+  .stat-tile .val{font-family:var(--font-head);font-size:clamp(17px,2vw,21px);font-weight:800;margin-top:3px;letter-spacing:-.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat-tile .val.accent-orange{color:var(--orange)}
+  .stat-tile .val.accent-teal{color:var(--teal)}
+
+  /* ---- sections ---- */
+  .sec-head{display:flex;align-items:baseline;gap:11px;margin-bottom:14px;flex-wrap:wrap}
+  .sec-dot{width:11px;height:11px;flex:none;border-radius:4px;align-self:center;background:linear-gradient(135deg,var(--c1,#fb923c),var(--c2,#f43f5e));box-shadow:0 0 12px 1px color-mix(in srgb,var(--c1,#fb923c) 45%,transparent)}
+  .sec-head h2{font-family:var(--font-head);font-size:17px;font-weight:800;letter-spacing:-.2px}
+  .sec-sub{font-size:12px;color:var(--muted)}
+
+  /* ---- serveurs ---- */
+  .servers-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(252px,1fr));gap:15px}
+  .server-card{padding:17px 17px 15px;display:flex;flex-direction:column;gap:11px}
+  .server-card.offline{opacity:.62}
+  .sc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
+  .sc-name{font-family:var(--font-head);font-size:15px;font-weight:800;letter-spacing:-.2px;word-break:break-word}
+  .badge{flex:none;font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:999px;letter-spacing:.4px}
+  .badge.on{color:var(--green);background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.28)}
+  .badge.off{color:var(--red);background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3)}
+  .badge.warn{color:var(--orange);background:rgba(251,146,60,.12);border:1px solid rgba(251,146,60,.3)}
+  .sc-map{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12.5px}
+  .sc-map .ic{display:inline-flex;color:var(--cyan)}
+  .sc-count-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px}
+  .sc-count{font-weight:600}
+  .sc-pct{color:var(--faint);font-size:11.5px}
+  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
+  .bar-fill{height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,var(--teal),var(--cyan));transition:width .8s cubic-bezier(.22,1,.36,1)}
+  .bar-fill.hot{background:linear-gradient(90deg,var(--orange),var(--rose))}
+  .sc-foot{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-top:2px}
+  .chip{font-size:11px;font-weight:600;color:var(--muted);background:rgba(255,255,255,.05);border:1px solid var(--border);padding:4px 9px;border-radius:8px;white-space:nowrap}
+  .sc-actions{display:flex;align-items:center;gap:7px;position:relative}
+  .btn{display:inline-flex;align-items:center;gap:6px;border:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;border-radius:10px;text-decoration:none;transition:transform .15s ease,box-shadow .2s ease,filter .2s ease}
+  .btn:active{transform:scale(.96)}
+  .btn.join{padding:8px 14px;color:#fff;background:linear-gradient(135deg,#fb923c,#f43f5e);box-shadow:0 6px 18px rgba(244,63,94,.32)}
+  .btn.join:hover{filter:brightness(1.12);box-shadow:0 8px 22px rgba(244,63,94,.45)}
+  .btn.join.disabled{pointer-events:none;filter:grayscale(1);opacity:.4;box-shadow:none}
+  .btn.icon{width:33px;height:33px;justify-content:center;color:var(--muted);background:rgba(255,255,255,.05);border:1px solid var(--border)}
+  .btn.icon:hover{color:var(--txt);border-color:var(--border-hi)}
+  .btn.icon:disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+  .copied{
+    position:absolute;right:0;top:-26px;font-size:11px;font-weight:700;color:var(--green);
+    background:rgba(6,32,25,.9);border:1px solid rgba(52,211,153,.35);padding:2px 9px;border-radius:8px;
+    opacity:0;transform:translateY(4px);transition:opacity .25s,transform .25s;pointer-events:none;white-space:nowrap;
+  }
+  .copied.show{opacity:1;transform:translateY(0)}
+
+  /* ---- système ---- */
+  .sys-wrap{display:grid;grid-template-columns:minmax(300px,1fr) minmax(0,1.45fr);gap:15px}
+  .sys-left{padding:19px;display:flex;flex-direction:column;gap:16px}
+  .gauges{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  .gauge{display:flex;flex-direction:column;align-items:center;gap:7px;min-width:0}
+  .gauge-ring{position:relative;width:min(100%,104px);aspect-ratio:1}
+  .gauge-ring svg{width:100%;height:100%;display:block}
+  .gauge-bg{fill:none;stroke:rgba(255,255,255,.08);stroke-width:9}
+  .gauge-val{
+    fill:none;stroke:var(--teal);stroke-width:9;stroke-linecap:round;
+    stroke-dasharray:326.73;stroke-dashoffset:326.73;
+    transform:rotate(-90deg);transform-origin:50% 50%;
+    transition:stroke-dashoffset .9s cubic-bezier(.22,1,.36,1),stroke .5s ease;
+    filter:drop-shadow(0 0 5px rgba(45,212,191,.35));
+  }
+  .gauge-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0}
+  .gauge-center b{font-family:var(--font-head);font-size:clamp(13px,1.4vw,16px);font-weight:800;letter-spacing:-.3px}
+  .gauge-center small{font-size:9.5px;font-weight:700;letter-spacing:1.3px;color:var(--faint);text-transform:uppercase}
+  .gauge-sub{font-size:10.8px;color:var(--muted);text-align:center;line-height:1.4;min-height:2.8em}
+  .sys-chips{display:flex;flex-wrap:wrap;gap:8px}
+  .sys-chips .chip b{color:var(--txt);font-weight:700}
+  .chart-card{padding:19px;display:flex;flex-direction:column;gap:12px;min-width:0}
+  .chart-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .chart-head h3{font-family:var(--font-head);font-size:14px;font-weight:800}
+  .legend{display:flex;gap:15px;font-size:11.5px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .chart-wrap{position:relative;flex:1;min-height:230px}
+  .chart-wrap canvas{position:absolute;inset:0}
+  .hidden{display:none!important}
+
+  /* ---- colonnes leaderboard ---- */
+  .cols3{display:grid;grid-template-columns:repeat(auto-fit,minmax(295px,1fr));gap:15px}
+  .panel{padding:19px;display:flex;flex-direction:column;gap:8px;min-width:0}
+  .panel h3{font-family:var(--font-head);font-size:14px;font-weight:800;display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .panel h3 .sec-dot{width:9px;height:9px}
+  .list{display:flex;flex-direction:column}
+  .row{display:flex;align-items:center;gap:11px;padding:9px 3px;border-bottom:1px solid rgba(255,255,255,.05)}
+  .row:last-child{border-bottom:none}
+  .rank{
+    flex:none;width:27px;height:27px;border-radius:9px;display:grid;place-items:center;
+    font-family:var(--font-head);font-size:12px;font-weight:800;
+    color:var(--muted);background:rgba(255,255,255,.05);border:1px solid var(--border);
+  }
+  .rank.r1{color:#1a1206;background:linear-gradient(135deg,#fde68a,#f59e0b);border-color:transparent;box-shadow:0 3px 10px rgba(245,158,11,.35)}
+  .rank.r2{color:#141a24;background:linear-gradient(135deg,#e2e8f0,#94a3b8);border-color:transparent}
+  .rank.r3{color:#1f1008;background:linear-gradient(135deg,#fdba74,#b45309);border-color:transparent}
+  .row .grow{flex:1;min-width:0}
+  .row .main{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .sub{font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .end{text-align:right;flex:none}
+  .row .end .main{color:var(--teal)}
+  .row .end .main.time{color:var(--orange);font-variant-numeric:tabular-nums}
+  .dot{flex:none;width:9px;height:9px;border-radius:50%}
+  .dot.ok{background:var(--green);box-shadow:0 0 8px rgba(52,211,153,.6)}
+  .dot.ko{background:var(--red);box-shadow:0 0 8px rgba(248,113,113,.6)}
+  .dot.warn{background:var(--orange);box-shadow:0 0 8px rgba(251,146,60,.6)}
+
+  .empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:26px 12px;text-align:center}
+  .empty-ico{display:inline-flex;color:var(--faint)}
+  .empty-ico svg{width:28px;height:28px}
+  .empty-msg{font-size:13px;font-weight:600;color:var(--muted)}
+  .empty-sub{font-size:11.5px;color:var(--faint)}
+  .loading{padding:22px;text-align:center;color:var(--faint);font-size:12.5px;animation:blink 1.6s ease-in-out infinite}
+  @keyframes blink{50%{opacity:.45}}
+
+  /* ---- bas de page ---- */
+  .cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:15px}
+  .upd-badge{flex:none;font-size:10px;font-weight:800;letter-spacing:.6px;padding:3px 8px;border-radius:7px;text-transform:uppercase}
+  .upd-badge.up{color:var(--teal);background:rgba(45,212,191,.1);border:1px solid rgba(45,212,191,.3)}
+  .upd-badge.err{color:var(--red);background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3)}
+  .upd-badge.ok{color:var(--green);background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3)}
+  .mono{font-variant-numeric:tabular-nums;font-size:11px;color:var(--faint);white-space:nowrap}
+
+  footer{max-width:1440px;margin:0 auto;padding:0 clamp(14px,3vw,38px) 34px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--faint)}
+  .foot-brand{display:inline-flex;align-items:center;gap:6px}
+  .foot-ic{display:inline-flex;color:var(--teal)}
+
+  @media (max-width:900px){
+    .sys-wrap{grid-template-columns:1fr}
+  }
+  @media (max-width:480px){
+    .topbar{padding:16px}
+    .hero-stats{grid-template-columns:1fr 1fr}
+    .servers-grid{grid-template-columns:1fr}
+    .gauges{gap:5px}
+    .live{margin-left:0}
+  }
+</style>
+</head>
+<body>
+
+<div class="blob b1"></div>
+<div class="blob b2"></div>
+<div class="blob b3"></div>
+
+<div class="net-banner" id="netBanner" role="alert">
+  <span class="warn-dot"></span>
+  <span>Connexion à l'API perdue — reconnexion automatique…</span>
+</div>
+
+<main>
+  <!-- ============ HEADER ============ -->
+  <header class="glass topbar reveal" style="--d:.02s">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+          <path d="M2 14c2.5-3.5 5-3.5 7.5 0s5 3.5 7.5 0 4-3 5-1.5"/>
+          <path d="M2 19c2.5-3.5 5-3.5 7.5 0s5 3.5 7.5 0 4-3 5-1.5" opacity=".55"/>
+          <path d="M13 4l6 3-7.5 4.5L13 4z" fill="#fff" stroke="none"/>
+        </svg>
+      </div>
+      <div>
+        <h1>SurfLab</h1>
+        <p class="tagline">Monitoring des serveurs CS2 Surf</p>
+      </div>
+      <span class="live" id="livePill"><span class="live-dot"></span><span id="liveTxt">LIVE</span></span>
+    </div>
+    <div class="hero-stats">
+      <div class="stat-tile"><div class="lbl">Joueurs en ligne</div><div class="val accent-orange" id="statPlayers">—</div></div>
+      <div class="stat-tile"><div class="lbl">Serveurs</div><div class="val accent-teal" id="statServers">—</div></div>
+      <div class="stat-tile"><div class="lbl">Build CS2</div><div class="val" id="statBuild">—</div></div>
+      <div class="stat-tile"><div class="lbl">Uptime machine</div><div class="val" id="statUptime">—</div></div>
+    </div>
+  </header>
+
+  <!-- ============ SERVEURS ============ -->
+  <section class="reveal" style="--d:.08s">
+    <div class="sec-head">
+      <span class="sec-dot" style="--c1:#fb923c;--c2:#f43f5e"></span>
+      <h2>Serveurs de jeu</h2>
+      <span class="sec-sub" id="serversSub"></span>
+    </div>
+    <div class="servers-grid" id="serversGrid">
+      <div class="loading" id="serversPlaceholder">Chargement des serveurs…</div>
+    </div>
+  </section>
+
+  <!-- ============ SYSTÈME ============ -->
+  <section class="reveal" style="--d:.14s">
+    <div class="sec-head">
+      <span class="sec-dot" style="--c1:#2dd4bf;--c2:#38bdf8"></span>
+      <h2>Système hôte</h2>
+      <span class="sec-sub" id="sysSub"></span>
+    </div>
+    <div class="sys-wrap">
+      <div class="glass sys-left">
+        <div class="gauges">
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 120 120" role="img" aria-label="Utilisation CPU : mesure en cours"><circle class="gauge-bg" cx="60" cy="60" r="52"/><circle class="gauge-val" id="cpuArc" cx="60" cy="60" r="52"/></svg>
+              <div class="gauge-center" aria-hidden="true"><b id="cpuPct">—</b><small>CPU</small></div>
+            </div>
+            <div class="gauge-sub" id="cpuSub">—</div>
+          </div>
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 120 120" role="img" aria-label="Utilisation mémoire : mesure en cours"><circle class="gauge-bg" cx="60" cy="60" r="52"/><circle class="gauge-val" id="ramArc" cx="60" cy="60" r="52"/></svg>
+              <div class="gauge-center" aria-hidden="true"><b id="ramPct">—</b><small>RAM</small></div>
+            </div>
+            <div class="gauge-sub" id="ramSub">—</div>
+          </div>
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 120 120" role="img" aria-label="Utilisation disque : mesure en cours"><circle class="gauge-bg" cx="60" cy="60" r="52"/><circle class="gauge-val" id="diskArc" cx="60" cy="60" r="52"/></svg>
+              <div class="gauge-center" aria-hidden="true"><b id="diskPct">—</b><small>Disque</small></div>
+            </div>
+            <div class="gauge-sub" id="diskSub">—</div>
+          </div>
+        </div>
+        <div class="sys-chips" id="sysChips">
+          <span class="chip" id="loadChip">Load : —</span>
+          <span class="chip" id="coreChip">— cœurs</span>
+          <span class="chip" id="freeChip">— libres</span>
+        </div>
+      </div>
+      <div class="glass chart-card">
+        <div class="chart-head">
+          <h3>Charge en temps réel <span class="sec-sub">(fenêtre ~5 min)</span></h3>
+          <div class="legend" id="chartLegend">
+            <span><i style="background:#fb923c"></i>CPU %</span>
+            <span><i style="background:#2dd4bf"></i>RAM %</span>
+          </div>
+        </div>
+        <div class="chart-wrap" id="chartWrap"><canvas id="sysChart" role="img" aria-label="Graphique CPU et RAM"></canvas></div>
+        <div class="empty hidden" id="chartFallback">
+          <div class="empty-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4v15a1 1 0 0 0 1 1h17"/><path d="m7 9 4 4 3-3 5 5"/><path d="M19.2 11.5v3.7h-3.7"/></svg></div>
+          <p class="empty-msg">Graphique indisponible</p>
+          <p class="empty-sub">La librairie Chart.js n'a pas pu être chargée.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LEADERBOARD ============ -->
+  <section class="reveal" style="--d:.20s">
+    <div class="sec-head">
+      <span class="sec-dot" style="--c1:#fbbf24;--c2:#fb923c"></span>
+      <h2>Classement &amp; records</h2>
+      <span class="sec-sub">stats de la communauté</span>
+    </div>
+    <div class="cols3">
+      <div class="glass panel">
+        <h3><span class="sec-dot" style="--c1:#fbbf24;--c2:#f59e0b"></span>Top joueurs</h3>
+        <div class="list" id="leadList"><div class="loading">Chargement…</div></div>
+      </div>
+      <div class="glass panel">
+        <h3><span class="sec-dot" style="--c1:#fb923c;--c2:#f43f5e"></span>Records récents</h3>
+        <div class="list" id="recList"><div class="loading">Chargement…</div></div>
+      </div>
+      <div class="glass panel">
+        <h3><span class="sec-dot" style="--c1:#2dd4bf;--c2:#38bdf8"></span>Résumé par map</h3>
+        <div class="list" id="mapsList"><div class="loading">Chargement…</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DOCKER + MAJ ============ -->
+  <section class="reveal" style="--d:.26s">
+    <div class="sec-head">
+      <span class="sec-dot" style="--c1:#38bdf8;--c2:#6366f1"></span>
+      <h2>Infrastructure</h2>
+    </div>
+    <div class="cols2">
+      <div class="glass panel">
+        <h3><span class="sec-dot" style="--c1:#38bdf8;--c2:#6366f1"></span>Conteneurs Docker <span class="sec-sub" id="contCount"></span></h3>
+        <div class="list" id="contList"><div class="loading">Chargement…</div></div>
+      </div>
+      <div class="glass panel">
+        <h3><span class="sec-dot" style="--c1:#2dd4bf;--c2:#34d399"></span>Mises à jour CS2</h3>
+        <div class="sys-chips" id="updMeta" style="margin-bottom:6px">
+          <span class="chip" id="updBuild">Build : —</span>
+          <span class="chip" id="updTotals">—</span>
+          <span class="chip" id="updCheck">Dernière vérif. : —</span>
+        </div>
+        <div class="list" id="updList"><div class="loading">Chargement…</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="reveal" style="--d:.32s">
+  <span class="foot-brand">SurfLab — monitoring temps réel · surf's up
+    <span class="foot-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12c2.5-3.5 5-3.5 7.5 0s5 3.5 7.5 0 4-3 5-1.5"/><path d="M2 17.5c2.5-3.5 5-3.5 7.5 0s5 3.5 7.5 0 4-3 5-1.5" opacity=".55"/></svg></span>
+  </span>
+  <span>Dernière actualisation : <span id="lastRefresh">—</span></span>
+</footer>
+
+<script src="/vendor/chart.umd.min.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  /* ================= utilitaires ================= */
+  var LB_BASE = location.protocol + '//' + location.hostname + ':3000';
+  var FAST_MS = 5000, SLOW_MS = 45000, MAX_POINTS = 60;
+
+  function $(id){ return document.getElementById(id); }
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function clear(node){ while (node.firstChild) node.removeChild(node.firstChild); }
+  function isNum(v){ return typeof v === 'number' && isFinite(v); }
+  function fmtNum(v, d){ return isNum(v) ? v.toFixed(d === undefined ? 1 : d) : '—'; }
+  function fmtInt(v){ return isNum(v) ? String(Math.round(v)) : '—'; }
+  function clampPct(v){ return isNum(v) ? Math.max(0, Math.min(100, v)) : 0; }
+  /* pluriel : 0 et n>1 prennent le "s", 1 reste au singulier */
+  function plural(n){ return n === 1 ? '' : 's'; }
+
+  function timeAgo(epochSec){
+    if (!isNum(epochSec) || epochSec <= 0) return '';
+    var diff = Date.now() / 1000 - epochSec;
+    if (diff < 90) return "à l'instant";
+    var m = Math.floor(diff / 60);
+    if (m < 60) return 'il y a ' + m + ' min';
+    var h = Math.floor(m / 60);
+    if (h < 24) return 'il y a ' + h + ' h';
+    var d = Math.floor(h / 24);
+    if (d < 45) return 'il y a ' + d + ' j';
+    try { return new Date(epochSec * 1000).toLocaleDateString('fr-FR'); } catch (e) { return ''; }
+  }
+
+  /* icônes statiques (aucune donnée dynamique injectée ici) */
+  var ICONS = {
+    map:  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s7-5.1 7-11a7 7 0 1 0-14 0c0 5.9 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+    play: '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+    sat:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5.5" cy="18.5" r="1.3" fill="currentColor" stroke="none"/><path d="M4 13.5a7 7 0 0 1 7 7"/><path d="M4 7.5a13 13 0 0 1 13 13"/></svg>',
+    wave: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 12c2.5-3.5 5-3.5 7.5 0s5 3.5 7.5 0 4-3 5-1.5"/><path d="M2 17.5c2.5-3.5 5-3.5 7.5 0s5 3.5 7.5 0 4-3 5-1.5" opacity=".55"/></svg>',
+    timer:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="13.5" r="7"/><path d="M12 10v3.5l2.4 1.8"/><path d="M9.5 2.5h5"/></svg>',
+    mapBig:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M9 4 3 6.5v13L9 17l6 2.5 6-2.5v-13L15 6.5 9 4z"/><path d="M9 4v13"/><path d="M15 6.5v13"/></svg>',
+    box:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
+    spark:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M11 4l1.7 4.6 4.6 1.7-4.6 1.7L11 16.6l-1.7-4.6L4.7 10.3l4.6-1.7L11 4z"/><path d="M18.5 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1z"/></svg>'
+  };
+  function icon(name){
+    var s = el('span', 'ic');
+    s.innerHTML = ICONS[name] || ''; /* chaînes statiques uniquement */
+    return s;
+  }
+
+  function fetchJSON(url){
+    var ctrl = new AbortController();
+    var timer = setTimeout(function(){ ctrl.abort(); }, 8000);
+    return fetch(url, { signal: ctrl.signal, cache: 'no-store' })
+      .then(function(r){
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .finally(function(){ clearTimeout(timer); });
+  }
+
+  async function copyText(text){
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (e) {
+      /* Secours volontaire : document.execCommand('copy') est déprécié,
+         mais reste le seul fallback quand navigator.clipboard est
+         indisponible (contexte non sécurisé / permission refusée). */
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch (e2) { return false; }
+    }
+  }
+
+  function emptyState(container, iconName, msg, sub){
+    clear(container);
+    var box = el('div', 'empty');
+    var ico = el('div', 'empty-ico');
+    ico.setAttribute('aria-hidden', 'true');
+    ico.innerHTML = ICONS[iconName] || ''; /* chaînes statiques uniquement, jamais de données */
+    box.appendChild(ico);
+    box.appendChild(el('p', 'empty-msg', msg));
+    if (sub) box.appendChild(el('p', 'empty-sub', sub));
+    container.appendChild(box);
+  }
+
+  /* ================= état connexion ================= */
+  var wasOnline = true;
+  function setConn(ok){
+    if (ok === wasOnline) return;
+    wasOnline = ok;
+    $('netBanner').classList.toggle('show', !ok);
+    $('livePill').classList.toggle('down', !ok);
+    $('liveTxt').textContent = ok ? 'LIVE' : 'HORS LIGNE';
+  }
+
+  /* ================= graphique temps réel ================= */
+  var sysChart = null;
+  var CIRC = 2 * Math.PI * 52;
+
+  function initChart(){
+    try {
+      if (typeof Chart === 'undefined') {
+        $('chartWrap').classList.add('hidden');
+        $('chartLegend').classList.add('hidden');
+        $('chartFallback').classList.remove('hidden');
+        return;
+      }
+      Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+      Chart.defaults.font.size = 11;
+      var ctx = $('sysChart').getContext('2d');
+      var gCpu = ctx.createLinearGradient(0, 0, 0, 260);
+      gCpu.addColorStop(0, 'rgba(251,146,60,.30)');
+      gCpu.addColorStop(1, 'rgba(251,146,60,0)');
+      var gRam = ctx.createLinearGradient(0, 0, 0, 260);
+      gRam.addColorStop(0, 'rgba(45,212,191,.28)');
+      gRam.addColorStop(1, 'rgba(45,212,191,0)');
+      sysChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            { label: 'CPU %', data: [], borderColor: '#fb923c', backgroundColor: gCpu,
+              fill: true, tension: .38, borderWidth: 2, pointRadius: 0, pointHitRadius: 8 },
+            { label: 'RAM %', data: [], borderColor: '#2dd4bf', backgroundColor: gRam,
+              fill: true, tension: .38, borderWidth: 2, pointRadius: 0, pointHitRadius: 8 }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: 'rgba(10,15,30,.92)',
+              borderColor: 'rgba(255,255,255,.14)', borderWidth: 1,
+              titleColor: '#e7edf7', bodyColor: '#aeb9cc',
+              padding: 10, cornerRadius: 10, boxPadding: 4,
+              callbacks: {
+                label: function(c){
+                  var v = c.parsed.y;
+                  return ' ' + c.dataset.label + ' : ' + (isNum(v) ? v.toFixed(1) : '—') + ' %';
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              min: 0, max: 100,
+              ticks: { color: 'rgba(141,154,176,.85)', callback: function(v){ return v + '%'; }, maxTicksLimit: 5 },
+              grid: { color: 'rgba(255,255,255,.055)' },
+              border: { display: false }
+            },
+            x: {
+              ticks: { color: 'rgba(141,154,176,.7)', maxTicksLimit: 6, maxRotation: 0 },
+              grid: { display: false },
+              border: { display: false }
+            }
+          }
+        }
+      });
+    } catch (e) {
+      sysChart = null;
+      $('chartWrap').classList.add('hidden');
+      $('chartFallback').classList.remove('hidden');
+    }
+  }
+
+  function pushChartPoint(cpu, ram){
+    if (!sysChart) return;
+    try {
+      var t = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var d = sysChart.data;
+      d.labels.push(t);
+      d.datasets[0].data.push(isNum(cpu) ? cpu : null);
+      d.datasets[1].data.push(isNum(ram) ? ram : null);
+      while (d.labels.length > MAX_POINTS) {
+        d.labels.shift();
+        d.datasets[0].data.shift();
+        d.datasets[1].data.shift();
+      }
+      sysChart.update('none');
+    } catch (e) { /* silencieux */ }
+  }
+
+  /* ================= header + serveurs ================= */
+  var serverCards = new Map();
+
+  function buildServerCard(){
+    var root = el('article', 'server-card glass-sub');
+    var head = el('div', 'sc-head');
+    var name = el('h3', 'sc-name', '—');
+    var badge = el('span', 'badge off', '—');
+    head.appendChild(name); head.appendChild(badge);
+
+    var mapRow = el('div', 'sc-map');
+    mapRow.appendChild(icon('map'));
+    var mapTxt = el('span', null, '—');
+    mapRow.appendChild(mapTxt);
+
+    var countRow = el('div', 'sc-count-row');
+    var count = el('span', 'sc-count', '— / — joueurs');
+    var pct = el('span', 'sc-pct', '');
+    countRow.appendChild(count); countRow.appendChild(pct);
+
+    var bar = el('div', 'bar');
+    var fill = el('div', 'bar-fill');
+    bar.appendChild(fill);
+
+    var foot = el('div', 'sc-foot');
+    var port = el('span', 'chip', 'port —');
+    var actions = el('div', 'sc-actions');
+    var join = el('a', 'btn join');
+    join.appendChild(icon('play'));
+    join.appendChild(el('span', null, 'Rejoindre'));
+    var copyBtn = el('button', 'btn icon');
+    copyBtn.type = 'button';
+    copyBtn.title = "Copier l'adresse";
+    copyBtn.setAttribute('aria-label', "Copier l'adresse du serveur");
+    copyBtn.appendChild(icon('copy'));
+    var copied = el('span', 'copied', 'Adresse copiée !');
+    actions.appendChild(join); actions.appendChild(copyBtn); actions.appendChild(copied);
+    foot.appendChild(port); foot.appendChild(actions);
+
+    root.appendChild(head); root.appendChild(mapRow);
+    root.appendChild(countRow); root.appendChild(bar); root.appendChild(foot);
+
+    var card = { root: root, name: name, badge: badge, mapTxt: mapTxt, count: count,
+                 pct: pct, fill: fill, port: port, join: join, copyBtn: copyBtn,
+                 copied: copied, addr: '', copyTimer: null };
+    copyBtn.addEventListener('click', function(){
+      if (!card.addr) return;
+      copyText(card.addr).then(function(ok){
+        card.copied.textContent = ok ? 'Adresse copiée !' : 'Copie impossible';
+        card.copied.classList.add('show');
+        if (card.copyTimer) clearTimeout(card.copyTimer);
+        card.copyTimer = setTimeout(function(){ card.copied.classList.remove('show'); }, 1500);
+      });
+    });
+    return card;
+  }
+
+  function updateServerCard(card, s){
+    var online = !!s.online;
+    var players = isNum(s.players) ? s.players : 0;
+    var max = isNum(s.max_players) && s.max_players > 0 ? s.max_players : 0;
+    var portNum = isNum(Number(s.port)) && s.port !== null && s.port !== undefined ? Number(s.port) : null;
+
+    card.name.textContent = s.server_name || s.name || 'Serveur';
+    card.badge.textContent = online ? 'En ligne' : 'Hors ligne';
+    card.badge.className = 'badge ' + (online ? 'on' : 'off');
+    card.root.classList.toggle('offline', !online);
+    card.mapTxt.textContent = s.map || 'map inconnue';
+    card.count.textContent = fmtInt(players) + ' / ' + (max ? fmtInt(max) : '—') + ' joueur' + plural(players);
+
+    var ratio = (online && max) ? clampPct(players / max * 100) : 0;
+    card.fill.style.width = ratio.toFixed(0) + '%';
+    card.fill.classList.toggle('hot', ratio >= 80);
+    card.pct.textContent = max ? ratio.toFixed(0) + ' %' : '';
+
+    card.port.textContent = 'port ' + (portNum !== null ? portNum : '—');
+
+    /* adresse copiable seulement si on a un port exploitable en jeu */
+    card.addr = portNum !== null ? location.hostname + ':' + portNum : '';
+    card.copyBtn.disabled = portNum === null;
+
+    /* lien "Rejoindre" réellement inerte (souris ET clavier) si hors ligne ou sans port */
+    var joinable = online && portNum !== null;
+    if (joinable) {
+      card.join.href = 'steam://connect/' + location.hostname + ':' + portNum;
+      card.join.removeAttribute('tabindex');
+    } else {
+      card.join.removeAttribute('href');
+      card.join.setAttribute('tabindex', '-1');
+    }
+    card.join.classList.toggle('disabled', !joinable);
+    card.join.setAttribute('aria-disabled', String(!joinable));
+  }
+
+  function renderServers(list){
+    var grid = $('serversGrid');
+    var ph = $('serversPlaceholder');
+    if (ph) ph.remove();
+    var seen = new Set();
+    (list || []).forEach(function(s, i){
+      if (!s || typeof s !== 'object') return;
+      var key = String(s.name || ('srv-' + (s.port !== undefined ? s.port : i)));
+      seen.add(key);
+      var card = serverCards.get(key);
+      if (!card) {
+        card = buildServerCard();
+        card.root.classList.add('reveal');
+        grid.appendChild(card.root);
+        serverCards.set(key, card);
+      }
+      updateServerCard(card, s);
+    });
+    serverCards.forEach(function(card, key){
+      if (!seen.has(key)) { card.root.remove(); serverCards.delete(key); }
+    });
+    if (serverCards.size === 0) {
+      emptyState(grid, 'wave', 'Aucun serveur détecté', 'Les serveurs apparaîtront ici dès leur démarrage.');
+    } else {
+      var e = grid.querySelector('.empty');
+      if (e) e.remove();
+    }
+  }
+
+  function renderPlayers(data){
+    if (!data) return;
+    $('statPlayers').textContent = isNum(data.total_players) ? fmtInt(data.total_players) : '—';
+    var servers = Array.isArray(data.servers) ? data.servers : [];
+    var onlineCount = servers.filter(function(s){ return s && s.online; }).length;
+    $('statServers').textContent = (typeof data.total_online === 'string' && data.total_online)
+      ? data.total_online : (onlineCount + '/' + servers.length);
+    /* info complémentaire de la tuile "Serveurs" : occupation globale des slots */
+    var totalSlots = servers.reduce(function(acc, s){
+      return acc + (s && isNum(s.max_players) ? s.max_players : 0);
+    }, 0);
+    var tp = isNum(data.total_players) ? data.total_players : 0;
+    $('serversSub').textContent = totalSlots
+      ? (fmtInt(tp) + ' / ' + fmtInt(totalSlots) + ' slots occupés')
+      : '';
+    renderServers(servers);
+  }
+
+  /* ================= système ================= */
+  function setGauge(arcId, txtId, pct, label){
+    var arc = $(arcId), txt = $(txtId);
+    var p = clampPct(pct);
+    arc.style.strokeDashoffset = String(CIRC * (1 - p / 100));
+    var color = p >= 85 ? 'var(--red)' : (p >= 60 ? 'var(--orange)' : 'var(--teal)');
+    arc.style.stroke = color;
+    arc.style.filter = 'drop-shadow(0 0 5px ' + (p >= 85 ? 'rgba(248,113,113,.4)' : (p >= 60 ? 'rgba(251,146,60,.4)' : 'rgba(45,212,191,.35)')) + ')';
+    txt.textContent = isNum(pct) ? p.toFixed(1) + '%' : '—';
+    var svg = arc.ownerSVGElement;
+    if (svg) svg.setAttribute('aria-label', label + ' : ' + (isNum(pct) ? p.toFixed(1) + ' %' : 'valeur inconnue'));
+  }
+
+  function renderSystem(data){
+    if (!data) return;
+    var cpu = data.cpu || {}, mem = data.memory || {}, disk = data.disk || {}, up = data.uptime || {};
+
+    setGauge('cpuArc', 'cpuPct', cpu.percent, 'Utilisation CPU');
+    setGauge('ramArc', 'ramPct', mem.percent, 'Utilisation mémoire');
+    setGauge('diskArc', 'diskPct', disk.percent, 'Utilisation disque');
+
+    $('cpuSub').textContent = fmtInt(cpu.cores) + ' cœurs';
+    $('ramSub').textContent = fmtNum(mem.used_gb) + ' / ' + fmtNum(mem.total_gb) + ' Go';
+    $('diskSub').textContent = fmtNum(disk.used_gb) + ' / ' + fmtNum(disk.total_gb) + ' Go';
+
+    $('loadChip').textContent = 'Load : ' + fmtNum(cpu.load_1m, 2) + ' · ' + fmtNum(cpu.load_5m, 2) + ' · ' + fmtNum(cpu.load_15m, 2);
+    $('coreChip').textContent = fmtInt(cpu.cores) + ' cœurs';
+    $('freeChip').textContent = fmtNum(disk.free_gb) + ' Go libres';
+    $('sysSub').textContent = up.formatted ? ('uptime ' + up.formatted) : '';
+    if (up.formatted) $('statUptime').textContent = up.formatted;
+
+    pushChartPoint(cpu.percent, mem.percent);
+  }
+
+  /* ================= leaderboard (port 3000) ================= */
+  var loaded = { lead: false, rec: false, maps: false };
+
+  function renderLeaderboard(res){
+    var box = $('leadList');
+    if (!res || res.success === false || res.available === false) {
+      emptyState(box, 'sat', 'Statistiques indisponibles', 'Le service leaderboard ne répond pas pour le moment.');
+      return;
+    }
+    var rows = Array.isArray(res.data) ? res.data : [];
+    if (rows.length === 0) {
+      emptyState(box, 'wave', 'Aucun joueur classé', 'Surfe sur les serveurs pour marquer les premiers points !');
+      return;
+    }
+    clear(box);
+    rows.forEach(function(p){
+      if (!p || typeof p !== 'object') return;
+      var row = el('div', 'row');
+      var r = isNum(p.rank) ? p.rank : null;
+      var rank = el('span', 'rank' + (r !== null && r <= 3 ? ' r' + r : ''), r !== null ? r : '·');
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'main', p.name || 'Anonyme'));
+      var seenTxt = timeAgo(p.lastConnected);
+      if (seenTxt) grow.appendChild(el('div', 'sub', 'vu ' + seenTxt));
+      var end = el('div', 'end');
+      end.appendChild(el('div', 'main', (isNum(p.points) ? p.points.toLocaleString('fr-FR') : '—') + ' pts'));
+      row.appendChild(rank); row.appendChild(grow); row.appendChild(end);
+      box.appendChild(row);
+    });
+  }
+
+  function renderRecords(res){
+    var box = $('recList');
+    if (!res || res.success === false || res.available === false) {
+      emptyState(box, 'sat', 'Statistiques indisponibles', 'Le service leaderboard ne répond pas pour le moment.');
+      return;
+    }
+    var rows = Array.isArray(res.data) ? res.data : [];
+    if (rows.length === 0) {
+      emptyState(box, 'timer', 'Aucun record', 'Pose le premier temps et entre dans la légende !');
+      return;
+    }
+    clear(box);
+    rows.forEach(function(r){
+      if (!r || typeof r !== 'object') return;
+      var row = el('div', 'row');
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'main', r.name || 'Anonyme'));
+      grow.appendChild(el('div', 'sub', r.map || 'map inconnue'));
+      var end = el('div', 'end');
+      end.appendChild(el('div', 'main time', r.time || (isNum(r.seconds) ? r.seconds.toFixed(2) + ' s' : '—')));
+      var when = timeAgo(r.date);
+      if (when) end.appendChild(el('div', 'sub', when));
+      row.appendChild(grow); row.appendChild(end);
+      box.appendChild(row);
+    });
+  }
+
+  function renderMaps(res){
+    var box = $('mapsList');
+    if (!res || res.success === false || res.available === false) {
+      emptyState(box, 'sat', 'Statistiques indisponibles', 'Le service leaderboard ne répond pas pour le moment.');
+      return;
+    }
+    var d = res.data || {};
+    var maps = Array.isArray(d.maps) ? d.maps : [];
+    if (maps.length === 0) {
+      emptyState(box, 'mapBig', 'Aucune statistique de map', 'Les résumés apparaîtront après les premières courses.');
+      return;
+    }
+    clear(box);
+    maps.forEach(function(m){
+      if (!m || typeof m !== 'object') return;
+      var row = el('div', 'row');
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'main', m.map || 'map inconnue'));
+      var pl = isNum(m.players) ? m.players : 0;
+      grow.appendChild(el('div', 'sub', pl + ' joueur' + plural(pl) + ' classé' + plural(pl)));
+      var end = el('div', 'end');
+      if (m.bestTime) {
+        end.appendChild(el('div', 'main time', m.bestTime));
+        end.appendChild(el('div', 'sub', 'par ' + (m.bestBy || '—')));
+      } else {
+        end.appendChild(el('div', 'sub', 'Aucun temps'));
+      }
+      row.appendChild(grow); row.appendChild(end);
+      box.appendChild(row);
+    });
+  }
+
+  /* ================= conteneurs + MAJ ================= */
+  function renderContainers(data){
+    var box = $('contList');
+    var list = data && Array.isArray(data.containers) ? data.containers : [];
+    $('contCount').textContent = list.length ? '· ' + list.length : '';
+    if (list.length === 0) {
+      emptyState(box, 'box', 'Aucun conteneur', 'Aucun conteneur Docker détecté sur la machine.');
+      return;
+    }
+    clear(box);
+    list.forEach(function(c){
+      if (!c || typeof c !== 'object') return;
+      var state = String(c.state || '').toLowerCase();
+      var running = state === 'running';
+      var row = el('div', 'row');
+      row.appendChild(el('span', 'dot ' + (running ? 'ok' : (state === 'restarting' ? 'warn' : 'ko'))));
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'main', c.name || 'conteneur'));
+      grow.appendChild(el('div', 'sub', c.status || state || '—'));
+      var end = el('div', 'end');
+      var badge = el('span', 'badge ' + (running ? 'on' : (state === 'restarting' ? 'warn' : 'off')),
+                     running ? 'Actif' : (state === 'restarting' ? 'Redémarre' : 'Arrêté'));
+      end.appendChild(badge);
+      row.appendChild(grow); row.appendChild(end);
+      box.appendChild(row);
+    });
+  }
+
+  function parseTs(s){
+    if (typeof s !== 'string') return 0;
+    var t = Date.parse(s.replace(' ', 'T'));
+    return isNum(t) ? t : 0;
+  }
+
+  function renderUpdates(data){
+    var box = $('updList');
+    if (!data) { emptyState(box, 'sat', 'Historique indisponible'); return; }
+    if (data.current_build) {
+      $('updBuild').textContent = 'Build : ' + data.current_build;
+      if ($('statBuild').textContent === '—') $('statBuild').textContent = String(data.current_build);
+    }
+    var tu = isNum(data.total_updates) ? data.total_updates : null;
+    var te = isNum(data.total_errors) ? data.total_errors : null;
+    $('updTotals').textContent =
+      (tu !== null ? tu + ' MAJ' : 'MAJ : —') + ' · ' +
+      (te !== null ? te + ' erreur' + plural(te) : 'erreurs : —');
+    $('updCheck').textContent = 'Dernière vérif. : ' + (data.last_check || '—');
+
+    var list = Array.isArray(data.updates) ? data.updates.slice() : [];
+    list.sort(function(a, b){ return parseTs(b && b.timestamp) - parseTs(a && a.timestamp); });
+    list = list.slice(0, 8);
+
+    if (list.length === 0) {
+      emptyState(box, 'spark', 'Aucune mise à jour enregistrée', 'Le journal se remplira à la prochaine MAJ de CS2.');
+      return;
+    }
+    clear(box);
+    list.forEach(function(u){
+      if (!u || typeof u !== 'object') return;
+      var type = String(u.type || '').toLowerCase();
+      var row = el('div', 'row');
+      var badge, label;
+      if (type === 'error') { badge = el('span', 'upd-badge err', 'Erreur'); label = u.message || 'Erreur inconnue'; }
+      else if (type === 'update') {
+        badge = el('span', 'upd-badge up', 'MAJ');
+        label = (u.from_build || '?') + '  →  ' + (u.to_build || '?');
+      }
+      else { badge = el('span', 'upd-badge ok', type || 'OK'); label = u.message || 'Opération réussie'; }
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'main', label));
+      var end = el('div', 'end');
+      end.appendChild(el('span', 'mono', u.timestamp || ''));
+      row.appendChild(badge); row.appendChild(grow); row.appendChild(end);
+      box.appendChild(row);
+    });
+  }
+
+  function renderBuild(data){
+    if (data && data.build_id) $('statBuild').textContent = String(data.build_id);
+  }
+
+  /* ================= boucles de rafraîchissement ================= */
+  function stampRefresh(){
+    try { $('lastRefresh').textContent = new Date().toLocaleTimeString('fr-FR'); } catch (e) {}
+  }
+
+  async function fastTick(){
+    var results = await Promise.allSettled([
+      fetchJSON('/api/monitoring/players'),
+      fetchJSON('/api/monitoring/system')
+    ]);
+    var okP = results[0].status === 'fulfilled';
+    var okS = results[1].status === 'fulfilled';
+    if (okP) renderPlayers(results[0].value);
+    else if (serverCards.size === 0 && !$('serversGrid').querySelector('.empty')) {
+      emptyState($('serversGrid'), 'sat', 'Serveurs indisponibles',
+                 "Impossible de joindre l'API — nouvelle tentative automatique…");
+    }
+    if (okS) renderSystem(results[1].value);
+    setConn(okP || okS);
+    if (okP || okS) stampRefresh();
+  }
+
+  async function slowTick(){
+    var results = await Promise.allSettled([
+      fetchJSON('/api/monitoring/containers'),
+      fetchJSON('/api/monitoring/updates'),
+      fetchJSON('/api/monitoring/build'),
+      fetchJSON(LB_BASE + '/api/stats/leaderboard?limit=10'),
+      fetchJSON(LB_BASE + '/api/stats/records/recent?limit=8'),
+      fetchJSON(LB_BASE + '/api/stats/summary')
+    ]);
+    if (results[0].status === 'fulfilled') renderContainers(results[0].value);
+    else if (!$('contList').querySelector('.row')) emptyState($('contList'), 'box', 'Conteneurs indisponibles', 'Impossible de joindre l\'API pour le moment.');
+
+    if (results[1].status === 'fulfilled') renderUpdates(results[1].value);
+    else if (!$('updList').querySelector('.row')) emptyState($('updList'), 'sat', 'Historique indisponible', 'Impossible de joindre l\'API pour le moment.');
+
+    if (results[2].status === 'fulfilled') renderBuild(results[2].value);
+
+    if (results[3].status === 'fulfilled') { renderLeaderboard(results[3].value); loaded.lead = true; }
+    else if (!loaded.lead) renderLeaderboard(null);
+
+    if (results[4].status === 'fulfilled') { renderRecords(results[4].value); loaded.rec = true; }
+    else if (!loaded.rec) renderRecords(null);
+
+    if (results[5].status === 'fulfilled') { renderMaps(results[5].value); loaded.maps = true; }
+    else if (!loaded.maps) renderMaps(null);
+  }
+
+  var fastTimer = null, slowTimer = null;
+  function startTimers(){
+    if (!fastTimer) fastTimer = setInterval(function(){ fastTick().catch(function(){}); }, FAST_MS);
+    if (!slowTimer) slowTimer = setInterval(function(){ slowTick().catch(function(){}); }, SLOW_MS);
+  }
+  function stopTimers(){
+    if (fastTimer) { clearInterval(fastTimer); fastTimer = null; }
+    if (slowTimer) { clearInterval(slowTimer); slowTimer = null; }
+  }
+
+  document.addEventListener('visibilitychange', function(){
+    /* onglet caché : timers stoppés ET animations CSS des blobs suspendues */
+    document.body.classList.toggle('blobs-paused', document.hidden);
+    if (document.hidden) stopTimers();
+    else {
+      fastTick().catch(function(){});
+      slowTick().catch(function(){});
+      startTimers();
+    }
+  });
+
+  /* ================= démarrage ================= */
+  initChart();
+  fastTick().catch(function(){});
+  slowTick().catch(function(){});
+  startTimers();
+})();
+</script>
+</body>
+</html>

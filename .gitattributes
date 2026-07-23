@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.dll binary
+*.so binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary
+*.zst binary
+*.sqlite binary
+*.db binary
