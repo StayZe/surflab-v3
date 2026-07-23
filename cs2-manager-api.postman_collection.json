@@ -1,0 +1,184 @@
+{
+  "info": {
+    "name": "SurfLab v3 - API securisee",
+    "description": "Backend Node/Express des serveurs CS2 Surf dynamiques. Les routes Serveurs exigent la cle interne du backend du site. Le service reste entierement gratuit.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{api_key}}", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://10.255.0.26:3000", "type": "string" },
+    { "key": "api_key", "value": "", "type": "string" },
+    { "key": "serverId", "value": "1", "type": "string" },
+    { "key": "ownerId", "value": "user-42", "type": "string" },
+    { "key": "mapName", "value": "surf_boreas", "type": "string" },
+    { "key": "steamId", "value": "76561198000000000", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Sante",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/health", "host": ["{{base_url}}"], "path": ["api", "health"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Serveurs",
+      "item": [
+        {
+          "name": "Creer un serveur",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/servers/create", "host": ["{{base_url}}"], "path": ["api", "servers", "create"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"serverName\": \"SurfLab - Boreas\",\n  \"mapId\": \"3133346713\",\n  \"maxPlayers\": 12,\n  \"ownerId\": \"{{ownerId}}\",\n  \"durationMinutes\": 60\n}"
+            },
+            "description": "Cree un conteneur cs2-surf-* sur un port libre. mapId et ownerId sont obligatoires. durationMinutes est optionnel (60 par defaut, 15 a 480)."
+          }
+        },
+        {
+          "name": "Lister tous les serveurs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/servers?page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["api", "servers"],
+              "query": [{ "key": "page", "value": "1" }, { "key": "limit", "value": "20" }]
+            }
+          }
+        },
+        {
+          "name": "Serveurs d'un owner",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/servers/user/{{ownerId}}", "host": ["{{base_url}}"], "path": ["api", "servers", "user", "{{ownerId}}"] }
+          }
+        },
+        {
+          "name": "Detail d'un serveur",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/servers/{{serverId}}", "host": ["{{base_url}}"], "path": ["api", "servers", "{{serverId}}"] }
+          }
+        },
+        {
+          "name": "Synchroniser tous les statuts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/servers/sync", "host": ["{{base_url}}"], "path": ["api", "servers", "sync"] }
+          }
+        },
+        {
+          "name": "Synchroniser un statut",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/servers/{{serverId}}/sync", "host": ["{{base_url}}"], "path": ["api", "servers", "{{serverId}}", "sync"] }
+          }
+        },
+        {
+          "name": "Arreter un serveur",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/servers/{{serverId}}/stop", "host": ["{{base_url}}"], "path": ["api", "servers", "{{serverId}}", "stop"] },
+            "body": { "mode": "raw", "raw": "{\n  \"ownerId\": \"{{ownerId}}\"\n}" }
+          }
+        },
+        {
+          "name": "Redemarrer un serveur",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/servers/{{serverId}}/restart", "host": ["{{base_url}}"], "path": ["api", "servers", "{{serverId}}", "restart"] },
+            "body": { "mode": "raw", "raw": "{\n  \"ownerId\": \"{{ownerId}}\"\n}" }
+          }
+        },
+        {
+          "name": "Supprimer un serveur",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/servers/delete/{{serverId}}", "host": ["{{base_url}}"], "path": ["api", "servers", "delete", "{{serverId}}"] },
+            "body": { "mode": "raw", "raw": "{\n  \"ownerId\": \"{{ownerId}}\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Maps",
+      "item": [
+        {
+          "name": "Lister les maps",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/maps", "host": ["{{base_url}}"], "path": ["api", "maps"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "SharpTimer",
+      "item": [
+        {
+          "name": "Classement global",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/stats/leaderboard?limit=50", "host": ["{{base_url}}"], "path": ["api", "stats", "leaderboard"], "query": [{ "key": "limit", "value": "50" }] }
+          }
+        },
+        {
+          "name": "Records d'une map",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/stats/maps/{{mapName}}/records?limit=50&style=0", "host": ["{{base_url}}"], "path": ["api", "stats", "maps", "{{mapName}}", "records"], "query": [{ "key": "limit", "value": "50" }, { "key": "style", "value": "0" }] }
+          }
+        },
+        {
+          "name": "Records recents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/stats/records/recent?limit=20", "host": ["{{base_url}}"], "path": ["api", "stats", "records", "recent"], "query": [{ "key": "limit", "value": "20" }] }
+          }
+        },
+        {
+          "name": "Profil joueur",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/stats/players/{{steamId}}", "host": ["{{base_url}}"], "path": ["api", "stats", "players", "{{steamId}}"] }
+          }
+        },
+        {
+          "name": "Resume global",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/stats/summary", "host": ["{{base_url}}"], "path": ["api", "stats", "summary"] }
+          }
+        }
+      ]
+    }
+  ]
+}

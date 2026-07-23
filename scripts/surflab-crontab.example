@@ -1,0 +1,4 @@
+# A installer dans le crontab root (sudo crontab -e).
+# Controle du build CS2 a 00h00, 06h00, 12h00 et 18h00.
+# Le script ecrit deja ses evenements dans /var/log/cs2-update.log.
+0 */6 * * * /home/surflab-v3/scripts/update-cs2.sh >/dev/null 2>&1
